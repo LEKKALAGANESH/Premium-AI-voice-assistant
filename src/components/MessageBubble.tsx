@@ -1,17 +1,49 @@
 // 2026 Pro-Active Voice UX: MessageBubble with Synchronized Word Highlighting
 // Updated: Fluid Design System with clamp() for 320px-4K device parity
+// 2026 Analytics: Added timestamps and response time indicators
+// 2026 Accessibility: Ghost labels for screen readers and clipboard context
 import React, { memo, useState, useCallback, useMemo } from 'react';
 import { Message } from '../types';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { Bot, Copy, Edit2, Check, Sparkles } from 'lucide-react';
+import { Bot, Copy, Edit2, Check, Sparkles, Mic, Clock, Zap } from 'lucide-react';
 import { SyncState, SyncWord } from '../hooks/useSpeechTextSync';
+import { formatMessageTime, formatLatency } from '../hooks/useAnalytics';
+
+// ============================================================================
+// 2026 ACCESSIBILITY: Ghost Labels for Screen Readers & Clipboard Context
+// ============================================================================
+// .sr-only class: Visually hidden but accessible to:
+// - Screen readers (NVDA, VoiceOver, JAWS)
+// - System clipboard during highlight-and-copy actions
+// - Assistive technology query tools
+// ============================================================================
+const SR_ONLY_STYLES: React.CSSProperties = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: '0',
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: '0',
+};
+
+// Ghost label component - invisible but copyable
+const GhostLabel = memo(({ children }: { children: React.ReactNode }) => (
+  <span style={SR_ONLY_STYLES} className="sr-only">
+    {children}
+  </span>
+));
+GhostLabel.displayName = 'GhostLabel';
 
 // === TYPES ===
 interface MessageBubbleProps {
   message: Message;
   syncState?: SyncState;
   isSpeaking?: boolean;
+  showMetadata?: boolean; // 2026 Analytics: Toggle for timestamps and performance badges
 }
 
 // === WORD COMPONENT (memoized for performance) ===
@@ -53,7 +85,7 @@ const Word = memo(({ word, state, isLastWord }: WordProps) => {
 Word.displayName = 'Word';
 
 // === MAIN COMPONENT ===
-const MessageBubble = memo(({ message, syncState, isSpeaking = false }: MessageBubbleProps) => {
+const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetadata = true }: MessageBubbleProps) => {
   const isAssistant = message.role === 'assistant';
   const [copied, setCopied] = useState(false);
 
@@ -63,32 +95,49 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false }: MessageB
     setTimeout(() => setCopied(false), 2000);
   }, [message.content]);
 
+  // ============================================================================
+  // 2026 ACCESSIBILITY: Ghost label text for clipboard and screen readers
+  // ============================================================================
+  const ghostLabelText = useMemo(() => {
+    return isAssistant ? 'VoxAI said: ' : 'You said: ';
+  }, [isAssistant]);
+
   // Memoize word rendering for assistant messages with sync
   const renderedContent = useMemo(() => {
     // If we have sync state and it's an assistant message, use word highlighting
     if (isAssistant && syncState && syncState.words.length > 0) {
       return (
-        <span
-          className="inline"
-          role="region"
-          aria-live={isSpeaking ? 'polite' : 'off'}
-          aria-atomic="false"
-        >
-          {syncState.words.map((syncWord, index) => (
-            <Word
-              key={`${syncWord.index}-${syncWord.word}`}
-              word={syncWord.word}
-              state={syncWord.state}
-              isLastWord={index === syncState.words.length - 1}
-            />
-          ))}
-        </span>
+        <>
+          {/* 2026 ACCESSIBILITY: Ghost label for context when copying */}
+          <GhostLabel>{ghostLabelText}</GhostLabel>
+          <span
+            className="inline"
+            role="region"
+            aria-live={isSpeaking ? 'polite' : 'off'}
+            aria-atomic="false"
+          >
+            {syncState.words.map((syncWord, index) => (
+              <Word
+                key={`${syncWord.index}-${syncWord.word}`}
+                word={syncWord.word}
+                state={syncWord.state}
+                isLastWord={index === syncState.words.length - 1}
+              />
+            ))}
+          </span>
+        </>
       );
     }
 
-    // Default: render full content without sync
-    return message.content;
-  }, [isAssistant, syncState, isSpeaking, message.content]);
+    // Default: render full content without sync (includes ghost label)
+    return (
+      <>
+        {/* 2026 ACCESSIBILITY: Ghost label for context when copying */}
+        <GhostLabel>{ghostLabelText}</GhostLabel>
+        {message.content}
+      </>
+    );
+  }, [isAssistant, syncState, isSpeaking, message.content, ghostLabelText]);
 
   // Progress indicator for synced playback
   const progressBar = useMemo(() => {
@@ -137,6 +186,53 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false }: MessageB
       </span>
     );
   }, [message.isDeterministic, message.role]);
+
+  // 2026 Analytics: Message timestamp
+  const timestamp = useMemo(() => {
+    if (!showMetadata) return null;
+    const time = message.createdAt || message.timestamp;
+    if (!time) return null;
+    return formatMessageTime(time);
+  }, [showMetadata, message.createdAt, message.timestamp]);
+
+  // 2026 Analytics: Source indicator for user messages
+  const sourceIndicator = useMemo(() => {
+    if (!showMetadata || message.role !== 'user' || !message.source) return null;
+
+    const isVoice = message.source === 'voice';
+    if (!isVoice) return null; // Only show indicator for voice messages
+
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-xs text-zinc-400 dark:text-zinc-500"
+        title="Voice message"
+      >
+        <Mic className="w-3 h-3" />
+      </span>
+    );
+  }, [showMetadata, message.role, message.source]);
+
+  // 2026 Analytics: Response time indicator for assistant messages
+  const latencyBadge = useMemo(() => {
+    if (!showMetadata || message.role !== 'assistant' || !message.latency) return null;
+
+    const isfast = message.latency < 1000;
+
+    return (
+      <span
+        className={clsx(
+          'inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full',
+          isfast
+            ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+            : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400'
+        )}
+        title={`Response time: ${formatLatency(message.latency)}`}
+      >
+        <Zap className="w-3 h-3" />
+        {formatLatency(message.latency)}
+      </span>
+    );
+  }, [showMetadata, message.role, message.latency]);
 
   return (
     <div
@@ -200,6 +296,26 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false }: MessageB
           {liveDataBadge}
           {progressBar}
         </div>
+
+        {/* 2026 Analytics: Metadata row (timestamp, source, latency) */}
+        {showMetadata && (timestamp || sourceIndicator || latencyBadge) && (
+          <div
+            className={clsx(
+              'flex items-center text-xs text-zinc-400 dark:text-zinc-500',
+              isAssistant ? 'justify-start' : 'justify-end'
+            )}
+            style={{ gap: 'var(--vox-space-2)', marginTop: 'var(--vox-space-1)' }}
+          >
+            {sourceIndicator}
+            {timestamp && (
+              <span className="inline-flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {timestamp}
+              </span>
+            )}
+            {latencyBadge}
+          </div>
+        )}
 
         {/* Action buttons - Fluid touch targets */}
         <div

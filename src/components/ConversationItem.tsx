@@ -1,5 +1,6 @@
 // 2026 Standard: Conversation Item with Contextual Action Menu
 // Features: Pin, Inline Rename, Share (Copy/MD/TXT), Safe Delete
+// REFACTORED: Stability Overhaul - Propagation Guards & Event Isolation
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
@@ -9,6 +10,9 @@ import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
 import MobileActionSheet, { ActionSheetAction } from './MobileActionSheet';
 import ConfirmationModal from './ConfirmationModal';
+
+// 2026 STABILITY: Minimum touch target size (WCAG 2.2 AAA)
+const TOUCH_TARGET_MIN = '44px';
 
 interface ConversationItemProps {
   conversation: Conversation;
@@ -65,38 +69,64 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     }
   }, [isRenaming]);
 
-  // Handle click outside for menu
+  // ============================================================================
+  // 2026 STABILITY: Click-Outside Handler with Proper Lifecycle Management
+  // ============================================================================
+  // Uses capture phase to intercept events before they bubble
+  // Cleanup is guaranteed on unmount to prevent memory leaks
+  // ============================================================================
   useEffect(() => {
     if (!isMenuOpen) return;
 
+    // Use refs to track cleanup state
+    let isCleanedUp = false;
+
     const handleClickOutside = (event: MouseEvent) => {
+      if (isCleanedUp) return;
+
       const target = event.target as Node;
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(target) &&
-        menuButtonRef.current &&
-        !menuButtonRef.current.contains(target)
-      ) {
+
+      // CRITICAL: Check if click is on menu button or inside menu
+      const isMenuButtonClick = menuButtonRef.current?.contains(target);
+      const isInsideMenu = menuRef.current?.contains(target);
+
+      if (!isMenuButtonClick && !isInsideMenu) {
+        // Prevent the click from propagating to sidebar elements
+        event.stopPropagation();
         onMenuClose();
       }
     };
 
     const handleEsc = (event: KeyboardEvent) => {
+      if (isCleanedUp) return;
+
       if (event.key === 'Escape') {
         event.preventDefault();
+        event.stopPropagation();
         onMenuClose();
-        menuButtonRef.current?.focus();
+        // Return focus to menu button for accessibility
+        requestAnimationFrame(() => {
+          menuButtonRef.current?.focus();
+        });
       }
     };
 
-    setTimeout(() => {
-      document.addEventListener('mousedown', handleClickOutside);
-      document.addEventListener('keydown', handleEsc);
-    }, 0);
+    // Add listeners in capture phase for priority handling
+    // Use requestAnimationFrame to ensure DOM is stable before adding listeners
+    const timeoutId = requestAnimationFrame(() => {
+      if (!isCleanedUp) {
+        document.addEventListener('mousedown', handleClickOutside, { capture: true });
+        document.addEventListener('touchstart', handleClickOutside as EventListener, { capture: true, passive: true });
+        document.addEventListener('keydown', handleEsc, { capture: true });
+      }
+    });
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('keydown', handleEsc);
+      isCleanedUp = true;
+      cancelAnimationFrame(timeoutId);
+      document.removeEventListener('mousedown', handleClickOutside, { capture: true });
+      document.removeEventListener('touchstart', handleClickOutside as EventListener, { capture: true });
+      document.removeEventListener('keydown', handleEsc, { capture: true });
     };
   }, [isMenuOpen, onMenuClose]);
 
@@ -371,12 +401,27 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
     document.body
   );
 
+  // ============================================================================
+  // 2026 STABILITY: Guarded Select Handler
+  // ============================================================================
+  // Ensures selection doesn't fire when menu is open or during rename
+  const handleSelectClick = useCallback((e: React.MouseEvent) => {
+    // Don't select if renaming or menu is open
+    if (isRenaming || isMenuOpen) {
+      e.preventDefault();
+      return;
+    }
+    onSelect();
+  }, [isRenaming, isMenuOpen, onSelect]);
+
   return (
     <>
       <div ref={itemRef} className="group relative">
-        {/* Main conversation button */}
+        {/* ================================================================== */}
+        {/* 2026 STABILITY: Main Conversation Button with Event Isolation */}
+        {/* ================================================================== */}
         <button
-          onClick={isRenaming ? undefined : onSelect}
+          onClick={handleSelectClick}
           onMouseEnter={handleTitleHover}
           onMouseLeave={handleTitleLeave}
           className={twMerge(
@@ -385,16 +430,17 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
               ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium'
               : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900',
             isCollapsed && !isMobile && 'justify-center',
-            isRenaming && 'pointer-events-none'
+            (isRenaming || isMenuOpen) && 'pointer-events-none'
           )}
           style={{
             padding: 'var(--vox-space-3)',
-            paddingRight: !isCollapsed || isMobile ? 'var(--vox-space-8)' : undefined,
+            // Extra padding on right to accommodate menu button without overlap
+            paddingRight: !isCollapsed || isMobile ? 'calc(var(--vox-space-3) + 44px)' : undefined,
             borderRadius: 'var(--vox-radius-lg)',
             minHeight: 'var(--vox-touch-min)',
           }}
           aria-label={isRenaming ? undefined : `Select conversation: ${conversation.title}`}
-          disabled={isRenaming}
+          disabled={isRenaming || isMenuOpen}
         >
           {/* Pin indicator (small, inline) */}
           {conversation.isPinned && (
@@ -435,33 +481,56 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
           )}
         </button>
 
-        {/* Context Menu Button (3-dots) */}
+        {/* ================================================================== */}
+        {/* 2026 STABILITY: Context Menu Button (3-dots) with Propagation Lock */}
+        {/* ================================================================== */}
+        {/* CRITICAL: This button must NEVER trigger parent onClick handlers */}
+        {/* Touch target is 44x44px minimum for WCAG 2.2 AAA compliance */}
+        {/* ================================================================== */}
         {(!isCollapsed || isMobile) && !isRenaming && (
           <button
             ref={menuButtonRef}
-            onClick={(e) => {
+            onClick={(e: React.MouseEvent) => {
+              // PROPAGATION LOCK: Prevent event from reaching parent elements
+              e.preventDefault();
               e.stopPropagation();
+
               if (isMenuOpen) {
                 onMenuClose();
               } else {
                 handleMenuOpen();
               }
             }}
+            onMouseDown={(e: React.MouseEvent) => {
+              // PROPAGATION LOCK: Stop mousedown from triggering parent handlers
+              e.stopPropagation();
+            }}
+            onTouchStart={(e: React.TouchEvent) => {
+              // PROPAGATION LOCK: Stop touch events on mobile
+              e.stopPropagation();
+            }}
+            onPointerDown={(e: React.PointerEvent) => {
+              // PROPAGATION LOCK: Universal pointer event guard
+              e.stopPropagation();
+            }}
             className={twMerge(
-              'absolute right-1 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-all vox-touch-target flex items-center justify-center',
-              isMenuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
+              'absolute right-1 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-all flex items-center justify-center',
+              isMenuOpen ? 'opacity-100 bg-zinc-100 dark:bg-zinc-800' : 'opacity-0 group-hover:opacity-100 focus:opacity-100'
             )}
             style={{
-              padding: 'var(--vox-space-1)',
+              padding: 'var(--vox-space-2)',
               borderRadius: 'var(--vox-radius-md)',
-              minWidth: 'calc(var(--vox-touch-min) * 0.8)',
-              minHeight: 'calc(var(--vox-touch-min) * 0.8)',
+              // 2026 STABILITY: Enforce 44x44px minimum touch target
+              minWidth: TOUCH_TARGET_MIN,
+              minHeight: TOUCH_TARGET_MIN,
+              // Ensure button doesn't overlap with text too much
+              marginRight: '-4px',
             }}
             aria-label="Open conversation menu"
             aria-expanded={isMenuOpen}
             aria-haspopup="menu"
           >
-            <MoreVertical style={{ width: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)', height: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)' }} />
+            <MoreVertical style={{ width: 'clamp(1rem, 1.125vw + 0.375rem, 1.125rem)', height: 'clamp(1rem, 1.125vw + 0.375rem, 1.125rem)' }} />
           </button>
         )}
       </div>

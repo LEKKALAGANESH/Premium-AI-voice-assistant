@@ -1,9 +1,11 @@
 // 2026 Standard: Restructured Sidebar with Top Row Controls
 // Hierarchy: [Toggle + Search] -> [+ New Chat] -> Conversations -> [Settings]
+// REFACTORED: Absolute-Empty Collapsed Protocol - Focus Mode Implementation
+// REFACTORED: Stability Overhaul - Inert Space Protocol & Event Isolation
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Conversation } from '../types';
-import { Menu, Search, Plus, Settings, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Menu, Search, Plus, Settings, X, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ConversationItem from './ConversationItem';
 
@@ -25,6 +27,25 @@ interface SidebarProps {
   onSearchChange: (query: string) => void;
   onSearchClear: () => void;
 }
+
+// 2026 FOCUS MODE: Collapsed state constants
+const COLLAPSED_WIDTH = 'var(--vox-sidebar-collapsed)'; // 64px or 80px
+const EXPANDED_WIDTH = 'var(--vox-sidebar-expanded)';
+
+// ============================================================================
+// 2026 STABILITY: Inert Space Click Handler
+// ============================================================================
+// Prevents clicks on empty sidebar space from triggering any state changes
+// This is a no-op handler that captures and neutralizes events
+// ============================================================================
+const handleInertClick = (e: React.MouseEvent) => {
+  // Only stop propagation if the click is directly on the inert container
+  // (not on a child button or interactive element)
+  if (e.target === e.currentTarget) {
+    e.stopPropagation();
+    // Do nothing - this is intentionally empty
+  }
+};
 
 // Sort conversations: Pinned first, then by updatedAt desc
 const sortConversations = (conversations: Conversation[]): Conversation[] => {
@@ -88,7 +109,35 @@ const Sidebar = ({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
+  // 2026 FOCUS MODE: Scroll position memory for list restoration
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const savedScrollPositionRef = useRef<number>(0);
+
+  // 2026 FOCUS MODE: Derived state for cleaner conditional logic
+  const isCollapsedDesktop = collapsed && !isMobile;
+  const showExpandedContent = !collapsed || isMobile;
+
   const sortedConversations = useMemo(() => sortConversations(conversations), [conversations]);
+
+  // 2026 FOCUS MODE: Save scroll position before collapse
+  useEffect(() => {
+    if (isCollapsedDesktop && scrollContainerRef.current) {
+      // Capture scroll position just before unmount
+      savedScrollPositionRef.current = scrollContainerRef.current.scrollTop;
+    }
+  }, [isCollapsedDesktop]);
+
+  // 2026 FOCUS MODE: Restore scroll position after expand
+  useEffect(() => {
+    if (!isCollapsedDesktop && scrollContainerRef.current && savedScrollPositionRef.current > 0) {
+      // Use requestAnimationFrame to ensure DOM is ready
+      requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = savedScrollPositionRef.current;
+        }
+      });
+    }
+  }, [isCollapsedDesktop]);
 
   // Focus management
   useEffect(() => {
@@ -97,9 +146,26 @@ const Sidebar = ({
     }
   }, [isMobile, isMobileOpen]);
 
+  // 2026 STABILITY: Close menu when mobile drawer closes
   useEffect(() => {
     if (!isMobileOpen && isMobile) setOpenMenuId(null);
   }, [isMobileOpen, isMobile]);
+
+  // 2026 STABILITY: Close menu when sidebar collapses (desktop)
+  // This prevents orphaned menu state when list unmounts
+  useEffect(() => {
+    if (isCollapsedDesktop) {
+      setOpenMenuId(null);
+    }
+  }, [isCollapsedDesktop]);
+
+  // 2026 STABILITY: Close menu when conversations array changes significantly
+  // (e.g., when a conversation is deleted)
+  useEffect(() => {
+    if (openMenuId && !conversations.some(c => c.id === openMenuId)) {
+      setOpenMenuId(null);
+    }
+  }, [conversations, openMenuId]);
 
   // ESC to close search
   useEffect(() => {
@@ -164,14 +230,25 @@ const Sidebar = ({
 
   const iconSize = { width: 'clamp(1.125rem, 1.25vw + 0.5rem, 1.25rem)', height: 'clamp(1.125rem, 1.25vw + 0.5rem, 1.25rem)' };
 
-  // Sidebar content with new hierarchy
+  // ============================================================================
+  // 2026 FOCUS MODE: Absolute-Empty Collapsed Protocol
+  // ============================================================================
+  // Structure: Header (static) -> Middle (UNMOUNTED when collapsed) -> Footer (static)
+  // Rule: No CSS hiding - strict conditional rendering for complete DOM removal
+  // ============================================================================
+
   const sidebarContent = (
     <div className="flex flex-col h-full">
-      {/* TOP ROW: Toggle (left) + Search (right) */}
+      {/* ================================================================== */}
+      {/* HEADER SECTION - Always Rendered, Fixed at Top */}
+      {/* ================================================================== */}
       <div
-        className="flex items-center justify-between flex-shrink-0"
+        className={`flex items-center flex-shrink-0 ${
+          isCollapsedDesktop ? 'justify-center' : 'justify-between'
+        }`}
         style={{ padding: 'var(--vox-space-3)' }}
       >
+        {/* Toggle Button - Centered when collapsed */}
         <button
           ref={firstFocusableRef}
           onClick={isMobile ? onMobileClose : onToggle}
@@ -193,7 +270,8 @@ const Sidebar = ({
           )}
         </button>
 
-        {(!collapsed || isMobile) && (
+        {/* Search Button - Only in expanded mode */}
+        {showExpandedContent && (
           <button
             onClick={handleSearchToggle}
             className={`flex items-center justify-center hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors ${isSearchOpen ? 'bg-zinc-200 dark:bg-zinc-800' : ''}`}
@@ -210,137 +288,187 @@ const Sidebar = ({
         )}
       </div>
 
-      {/* SEARCH INPUT (expandable) */}
-      <AnimatePresence>
-        {isSearchOpen && (!collapsed || isMobile) && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            className="overflow-hidden flex-shrink-0"
+      {/* ================================================================== */}
+      {/* MIDDLE SECTION - STRICTLY UNMOUNTED when collapsed */}
+      {/* This is the key to the Absolute-Empty Collapsed Protocol */}
+      {/* ================================================================== */}
+      {showExpandedContent ? (
+        <>
+          {/* SEARCH INPUT (expandable) */}
+          <AnimatePresence>
+            {isSearchOpen && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: 'auto', opacity: 1 }}
+                exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="overflow-hidden flex-shrink-0"
+                style={{ padding: '0 var(--vox-space-3)' }}
+              >
+                <div className="relative" style={{ marginBottom: 'var(--vox-space-2)' }}>
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => onSearchChange(e.target.value)}
+                    placeholder="Search chats..."
+                    className="w-full bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-500 outline-none"
+                    style={{
+                      padding: 'var(--vox-space-2) var(--vox-space-3)',
+                      borderRadius: 'var(--vox-radius-md)',
+                      fontSize: 'var(--vox-text-sm)',
+                    }}
+                  />
+                  {searchQuery && (
+                    <button
+                      onClick={onSearchClear}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
+                      aria-label="Clear search"
+                    >
+                      <X style={{ width: '14px', height: '14px' }} />
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* NEW CHAT BUTTON - Full width */}
+          <div className="flex-shrink-0" style={{ padding: '0 var(--vox-space-3)', marginBottom: 'var(--vox-space-3)' }}>
+            <button
+              onClick={handleNewChat}
+              className="w-full flex items-center justify-center bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+              style={{
+                gap: 'var(--vox-space-2)',
+                padding: 'var(--vox-space-3)',
+                borderRadius: 'var(--vox-radius-lg)',
+                minHeight: 'var(--vox-touch-min)',
+              }}
+              aria-label="New Chat"
+            >
+              <Plus style={iconSize} />
+              <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>New Chat</span>
+            </button>
+          </div>
+
+          {/* ================================================================== */}
+          {/* 2026 STABILITY: Conversations List with Inert Space Protocol */}
+          {/* ================================================================== */}
+          {/* RULE: Clicking empty space in this container has ZERO effect */}
+          {/* Only conversation items and their buttons trigger state changes */}
+          {/* ================================================================== */}
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto vox-ghost-scroll"
             style={{ padding: '0 var(--vox-space-3)' }}
+            onClick={handleInertClick}
+            onMouseDown={handleInertClick}
           >
-            <div className="relative" style={{ marginBottom: 'var(--vox-space-2)' }}>
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Search chats..."
-                className="w-full bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-500 outline-none"
-                style={{
-                  padding: 'var(--vox-space-2) var(--vox-space-3)',
-                  borderRadius: 'var(--vox-radius-md)',
-                  fontSize: 'var(--vox-text-sm)',
-                }}
-              />
-              {searchQuery && (
-                <button
-                  onClick={onSearchClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
-                  aria-label="Clear search"
+            {searchQuery && (
+              <div
+                className="text-zinc-500 dark:text-zinc-400 pointer-events-none select-none"
+                style={{ fontSize: 'var(--vox-text-xs)', padding: 'var(--vox-space-2)', marginBottom: 'var(--vox-space-2)' }}
+              >
+                {sortedConversations.length > 0
+                  ? `${sortedConversations.length} result${sortedConversations.length !== 1 ? 's' : ''}`
+                  : 'No results'}
+              </div>
+            )}
+
+            {/* 2026 STABILITY: Conversation items container - inert background */}
+            <div
+              className="space-y-1"
+              onClick={handleInertClick}
+            >
+              {sortedConversations.length > 0 ? (
+                sortedConversations.map((conv) => (
+                  <ConversationItem
+                    key={conv.id}
+                    conversation={conv}
+                    isActive={currentId === conv.id}
+                    isCollapsed={false}
+                    isMobile={isMobile}
+                    onSelect={() => handleSelect(conv.id)}
+                    onRename={(newTitle) => onRename(conv.id, newTitle)}
+                    onPin={() => onPin(conv.id)}
+                    onDelete={() => onDelete(conv.id)}
+                    onShare={(format) => handleShare(conv, format)}
+                    openMenuId={openMenuId}
+                    onMenuOpen={setOpenMenuId}
+                    onMenuClose={() => setOpenMenuId(null)}
+                  />
+                ))
+              ) : !searchQuery && (
+                <div
+                  className="text-zinc-400 dark:text-zinc-600 text-center pointer-events-none select-none"
+                  style={{ fontSize: 'var(--vox-text-sm)', padding: 'var(--vox-space-8) 0' }}
                 >
-                  <X style={{ width: '14px', height: '14px' }} />
-                </button>
+                  No conversations yet
+                </div>
               )}
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* NEW CHAT BUTTON */}
-      {(!collapsed || isMobile) && (
-        <div className="flex-shrink-0" style={{ padding: '0 var(--vox-space-3)', marginBottom: 'var(--vox-space-3)' }}>
-          <button
-            onClick={handleNewChat}
-            className="w-full flex items-center justify-center bg-brand-600 text-white hover:bg-brand-700 transition-colors"
-            style={{
-              gap: 'var(--vox-space-2)',
-              padding: 'var(--vox-space-3)',
-              borderRadius: 'var(--vox-radius-lg)',
-              minHeight: 'var(--vox-touch-min)',
-            }}
-            aria-label="New Chat"
-          >
-            <Plus style={iconSize} />
-            <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>New Chat</span>
-          </button>
-        </div>
-      )}
-
-      {/* Collapsed: Icon-only new chat */}
-      {collapsed && !isMobile && (
-        <div className="flex-shrink-0 flex justify-center" style={{ marginBottom: 'var(--vox-space-3)' }}>
-          <button
-            onClick={handleNewChat}
-            className="flex items-center justify-center bg-brand-600 text-white hover:bg-brand-700 transition-colors"
-            style={{
-              padding: 'var(--vox-space-3)',
-              borderRadius: 'var(--vox-radius-lg)',
-              minWidth: 'var(--vox-touch-min)',
-              minHeight: 'var(--vox-touch-min)',
-            }}
-            aria-label="New Chat"
-          >
-            <Plus style={iconSize} />
-          </button>
-        </div>
-      )}
-
-      {/* CONVERSATIONS LIST */}
-      <div
-        className="flex-1 overflow-y-auto vox-ghost-scroll"
-        style={{ padding: '0 var(--vox-space-3)' }}
-      >
-        {searchQuery && (!collapsed || isMobile) && (
-          <div
-            className="text-zinc-500 dark:text-zinc-400"
-            style={{ fontSize: 'var(--vox-text-xs)', padding: 'var(--vox-space-2)', marginBottom: 'var(--vox-space-2)' }}
-          >
-            {sortedConversations.length > 0
-              ? `${sortedConversations.length} result${sortedConversations.length !== 1 ? 's' : ''}`
-              : 'No results'}
           </div>
-        )}
-
-        <div className="space-y-1">
-          {sortedConversations.length > 0 ? (
-            sortedConversations.map((conv) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                isActive={currentId === conv.id}
-                isCollapsed={collapsed && !isMobile}
-                isMobile={isMobile}
-                onSelect={() => handleSelect(conv.id)}
-                onRename={(newTitle) => onRename(conv.id, newTitle)}
-                onPin={() => onPin(conv.id)}
-                onDelete={() => onDelete(conv.id)}
-                onShare={(format) => handleShare(conv, format)}
-                openMenuId={openMenuId}
-                onMenuOpen={setOpenMenuId}
-                onMenuClose={() => setOpenMenuId(null)}
-              />
-            ))
-          ) : !searchQuery && (
-            <div
-              className="text-zinc-400 dark:text-zinc-600 text-center"
-              style={{ fontSize: 'var(--vox-text-sm)', padding: 'var(--vox-space-8) 0' }}
+        </>
+      ) : (
+        /* ================================================================== */
+        /* COLLAPSED STATE: Absolute-Empty Middle */
+        /* Only New Chat icon button + empty flex space */
+        /* 2026 STABILITY: Inert Space Protocol - ZERO click handlers */
+        /* ================================================================== */
+        <>
+          {/* Icon-only New Chat - Centered */}
+          <div
+            className="flex-shrink-0 flex justify-center"
+            style={{ padding: 'var(--vox-space-3) 0' }}
+          >
+            <button
+              onClick={handleNewChat}
+              className="flex items-center justify-center bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+              style={{
+                padding: 'var(--vox-space-3)',
+                borderRadius: 'var(--vox-radius-lg)',
+                minWidth: 'var(--vox-touch-min)',
+                minHeight: 'var(--vox-touch-min)',
+              }}
+              aria-label="New Chat"
             >
-              {collapsed && !isMobile ? '' : 'No conversations yet'}
-            </div>
-          )}
-        </div>
-      </div>
+              <Plus style={iconSize} />
+            </button>
+          </div>
 
-      {/* SETTINGS BUTTON - Anchored to bottom */}
-      <div className="flex-shrink-0" style={{ padding: 'var(--vox-space-3)' }}>
+          {/* ================================================================== */}
+          {/* 2026 STABILITY: ABSOLUTE-EMPTY Inert Spacer */}
+          {/* ================================================================== */}
+          {/* CRITICAL: This element must have ZERO interactivity */}
+          {/* pointer-events-none ensures all clicks pass through to nothing */}
+          {/* ================================================================== */}
+          <div
+            className="flex-1 pointer-events-none"
+            aria-hidden="true"
+            style={{
+              // Ensure no visual artifacts
+              background: 'transparent',
+              // Prevent any accidental text selection
+              userSelect: 'none',
+            }}
+          />
+        </>
+      )}
+
+      {/* ================================================================== */}
+      {/* FOOTER SECTION - Always Rendered, Anchored to Bottom */}
+      {/* ================================================================== */}
+      <div
+        className="flex-shrink-0"
+        style={{ padding: 'var(--vox-space-3)' }}
+      >
         <button
           onClick={handleOpenSettings}
-          className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors ${collapsed && !isMobile ? 'justify-center w-full' : 'w-full'}`}
+          className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors w-full ${
+            isCollapsedDesktop ? 'justify-center' : ''
+          }`}
           style={{
-            gap: 'var(--vox-space-3)',
+            gap: isCollapsedDesktop ? '0' : 'var(--vox-space-3)',
             padding: 'var(--vox-space-3)',
             borderRadius: 'var(--vox-radius-lg)',
             minHeight: 'var(--vox-touch-min)',
@@ -348,7 +476,7 @@ const Sidebar = ({
           aria-label="Settings"
         >
           <Settings style={iconSize} />
-          {(!collapsed || isMobile) && (
+          {showExpandedContent && (
             <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>Settings</span>
           )}
         </button>

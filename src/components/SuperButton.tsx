@@ -17,6 +17,8 @@ interface SuperButtonProps {
   // 2026: Audio wake-up protocol
   audioMuted?: boolean; // True if audio needs user gesture to enable
   onAudioWakeUp?: () => Promise<boolean>; // Callback to wake up audio engine
+  // 2026 VOICE LIFECYCLE: Real-time mic duration display
+  micDuration?: string; // Formatted MM:SS duration (e.g., "00:05")
 }
 
 // 2026 Standard: Enhanced waveform visualization for voice bot
@@ -65,11 +67,13 @@ const MorphingVoiceIcon = ({
   hasRetry,
   size,
   audioMuted,
+  micDuration,
 }: {
   state: VoiceState;
   hasRetry?: boolean;
   size: "default" | "large";
   audioMuted?: boolean;
+  micDuration?: string;
 }) => {
   const springTransition = {
     type: "spring" as const,
@@ -109,16 +113,28 @@ const MorphingVoiceIcon = ({
         )}
 
         {state === "listening" && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col items-center gap-1">
             <WaveformVisualization size={size} />
-            <span
-              className={clsx(
-                "font-bold tracking-tight uppercase",
-                size === "large" ? "text-sm" : "text-xs",
-              )}
-            >
-              End
-            </span>
+            {/* 2026 VOICE LIFECYCLE: Real-time mic duration display */}
+            {micDuration && micDuration !== "00:00" ? (
+              <span
+                className={clsx(
+                  "font-mono font-bold tracking-wider tabular-nums",
+                  size === "large" ? "text-sm" : "text-xs",
+                )}
+              >
+                {micDuration}
+              </span>
+            ) : (
+              <span
+                className={clsx(
+                  "font-bold tracking-tight uppercase",
+                  size === "large" ? "text-sm" : "text-xs",
+                )}
+              >
+                End
+              </span>
+            )}
           </div>
         )}
 
@@ -163,6 +179,7 @@ const SuperButton = ({
   size = "default",
   audioMuted = false,
   onAudioWakeUp,
+  micDuration,
 }: SuperButtonProps) => {
   const buttonId = useId();
 
@@ -393,7 +410,7 @@ const SuperButton = ({
             disabled && "opacity-50 cursor-not-allowed",
           )}
         >
-          <MorphingVoiceIcon state={state} hasRetry={hasRetry} size={size} audioMuted={audioMuted} />
+          <MorphingVoiceIcon state={state} hasRetry={hasRetry} size={size} audioMuted={audioMuted} micDuration={micDuration} />
         </motion.button>
       </div>
     </div>

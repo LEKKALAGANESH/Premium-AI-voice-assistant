@@ -1,4 +1,5 @@
 // 2026 State Integrity: App Logic with Strict Save-Order Protocol
+// REFACTORED: Unified Message Pipeline - Single Path Mandate
 // Implements: Atomic conversation creation, hydration guardrails, sequential persistence
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -7,9 +8,23 @@ import { useConversations } from './useConversations';
 import { useVoiceAgent } from './useVoiceAgent';
 import { useSettings } from './useSettings';
 import { useSpeechTextSync, SyncState } from './useSpeechTextSync';
+import { useAnalytics } from './useAnalytics';
 import { chatService } from '../services/chat';
 import { storageService } from '../services/storage';
-import { Message, InputMode, FailedMessage, Conversation } from '../types';
+import { Message, InputMode, FailedMessage, Conversation, MessageSource } from '../types';
+
+// 2026 UNIFIED PIPELINE: Internal message source types for single-path routing
+type InternalMessageSource = 'text' | 'voice' | 'suggestion' | 'deterministic';
+
+// 2026 Analytics: Map internal source to analytics source type
+const mapToAnalyticsSource = (source: InternalMessageSource): MessageSource => {
+  switch (source) {
+    case 'voice': return 'voice';
+    case 'suggestion': return 'suggestion';
+    case 'deterministic': return 'override';
+    default: return 'typed';
+  }
+};
 
 export const useAppLogic = () => {
   const {
@@ -26,9 +41,25 @@ export const useAppLogic = () => {
     setConversations,
     isReady: isHydrationReady,
     hydrationState,
+    // 2026 UNIFIED PIPELINE: New state integrity exports
+    acquirePipelineLock,
+    releasePipelineLock,
+    isPipelineLocked,
+    getLockedConversationId,
+    updateMessageContent,
+    getConversationById,
+    // 2026 Analytics: Conversation analytics update
+    updateConversationWithAnalytics,
   } = useConversations();
 
   const { settings, updateSettings } = useSettings();
+
+  // 2026 Analytics: Latency engine hook
+  const {
+    startLatencyTimer,
+    stopLatencyTimer,
+    cancelLatencyTimer,
+  } = useAnalytics();
   const [inputText, setInputText] = useState('');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -85,115 +116,168 @@ export const useAppLogic = () => {
     // This is handled by the sync engine in MessageBubble
   }, []);
 
-  // === 2026 STATE INTEGRITY: Strict Save-Order Protocol ===
-  // Sequence: Create Conv → User Msg → Storage → API → AI Response → Storage
-  const handleSend = useCallback(
-    async (textOverride?: string, source: 'text' | 'voice' = 'text') => {
-      const text = textOverride || inputText;
-      if (!text.trim()) return;
-
-      // GUARDRAIL: Block operations until hydration complete
-      if (!isHydrationReady) {
-        console.warn('[useAppLogic] Blocking send: hydration not complete');
-        return;
+  // ============================================================================
+  // 2026 UNIFIED MESSAGE PIPELINE: Single-Path Master Function
+  // ============================================================================
+  // ALL message inputs MUST route through this function. No shortcuts allowed.
+  // Atomic Sequence: Lock → Context → User Insert → Persist → AI → Insert → Persist → Unlock
+  // ============================================================================
+  const sendMessage = useCallback(
+    async (text: string, source: InternalMessageSource = 'text'): Promise<boolean> => {
+      // VALIDATION: Empty messages are silently rejected
+      if (!text.trim()) {
+        return false;
       }
 
-      // Independent threads - text input doesn't trigger voice timers
-      if (source === 'text') {
+      // GUARDRAIL 1: Block until hydration complete
+      if (!isHydrationReady) {
+        console.warn('[UNIFIED PIPELINE] Blocked: hydration not complete');
+        return false;
+      }
+
+      // GUARDRAIL 2: Check if pipeline is already locked (concurrent send prevention)
+      if (isPipelineLocked()) {
+        console.warn('[UNIFIED PIPELINE] Blocked: pipeline already locked for',
+          getLockedConversationId());
+        return false;
+      }
+
+      // Generate unique operation ID for this pipeline execution
+      const operationId = uuidv4();
+
+      // Track source-specific behavior (using internal source types)
+      const isVoiceFlow = source === 'voice';
+      const isTextFlow = (source as InternalMessageSource) === 'text' || source === 'suggestion';
+
+      if (isTextFlow) {
         voiceFlowRef.current = false;
         setIsTextInputActive(true);
+      } else if (isVoiceFlow) {
+        voiceFlowRef.current = true;
       }
 
-      // === STEP 1: ATOMIC CONVERSATION CREATION ===
+      // ========================================
+      // STEP 1: ATOMIC CONVERSATION CREATION
+      // ========================================
       // If no active conversation, create one IMMEDIATELY and persist to storage
       let activeId = currentId;
-      let activeConv: Conversation | null = null;
 
       if (!activeId) {
         // ATOMIC: Create and persist in single operation - NO RACE CONDITIONS
-        activeConv = await createConversation();
-        activeId = activeConv.id;
+        const newConv = await createConversation();
+        activeId = newConv.id;
         // activeId is now persisted to localStorage via createConversation
-      } else {
-        activeConv = conversations.find((c) => c.id === activeId) || null;
       }
 
+      // ========================================
+      // STEP 2: ACQUIRE PIPELINE LOCK
+      // ========================================
+      // Lock the conversation to prevent mid-stream corruption
+      const lockAcquired = acquirePipelineLock(activeId, operationId);
+      if (!lockAcquired) {
+        console.error('[UNIFIED PIPELINE] Failed to acquire lock');
+        if (isTextFlow) setIsTextInputActive(false);
+        return false;
+      }
+
+      // Get fresh conversation state (avoids stale closure)
+      let activeConv = getConversationById(activeId);
+
       // Safety check - should never happen with proper hydration
-      if (!activeId || !activeConv) {
-        console.error('[useAppLogic] Critical: No active conversation after creation');
-        return;
+      if (!activeConv) {
+        console.error('[UNIFIED PIPELINE] Critical: No active conversation after creation');
+        releasePipelineLock(operationId);
+        if (isTextFlow) setIsTextInputActive(false);
+        return false;
       }
 
       // Get conversation history AFTER ensuring conversation exists
       const history: Message[] = activeConv.messages;
 
-      // === STEP 2: CREATE USER MESSAGE ===
+      // ========================================
+      // STEP 3: CREATE & PERSIST USER MESSAGE
+      // ========================================
+      const userMsgId = uuidv4();
+      const now = Date.now();
+      const analyticsSource = mapToAnalyticsSource(source);
+
       const userMsg: Message = {
-        id: uuidv4(),
+        id: userMsgId,
         role: 'user',
         content: text,
-        timestamp: Date.now(),
-        confidence: source === 'voice' ? voiceConfidenceRef.current : undefined,
+        timestamp: now,
+        createdAt: now, // 2026 Analytics: Absolute timestamp
+        source: analyticsSource, // 2026 Analytics: Message source
+        confidence: isVoiceFlow ? voiceConfidenceRef.current : undefined,
       };
 
-      // === STEP 3: PERSIST USER MESSAGE (Wait for confirmation) ===
+      // 2026 Analytics: Start latency timer when user message is submitted
+      startLatencyTimer(userMsgId, analyticsSource);
+
+      // STRICT SAVE-ORDER: Persist user message FIRST (await confirmation)
       await addMessage(activeId, userMsg);
 
-      // Clear input state
+      // Clear input state AFTER user message is persisted
       setInputText('');
       setStreamingText('');
       setIsThinking(true);
 
       try {
-        // === STEP 4: CALL GEMINI API ===
+        // ========================================
+        // STEP 4: GENERATE AI RESPONSE
+        // ========================================
         const aiResponse = await chatService.generateResponse(text, history);
 
-        // === STEP 5: CREATE ASSISTANT MESSAGE ===
+        // ========================================
+        // STEP 5: CREATE & PERSIST ASSISTANT PLACEHOLDER
+        // ========================================
         const assistantMsgId = uuidv4();
+        const assistantTimestamp = Date.now();
         const assistantMsg: Message = {
           id: assistantMsgId,
           role: 'assistant',
           content: '', // Will be filled progressively
-          timestamp: Date.now(),
+          timestamp: assistantTimestamp,
+          createdAt: assistantTimestamp, // 2026 Analytics: Absolute timestamp
           isDeterministic: aiResponse.includes('[LIVE DATA]'),
+          // latency will be set at final persistence
         };
 
-        // === STEP 6: PERSIST ASSISTANT MESSAGE PLACEHOLDER ===
+        // STRICT SAVE-ORDER: Persist assistant placeholder FIRST
         await addMessage(activeId, assistantMsg);
 
         setIsThinking(false);
 
-        // 2026: Setup sync engine for this message
+        // Setup sync engine for this message
         setActiveSyncText(aiResponse);
         setActiveSyncMessageId(assistantMsgId);
 
         // Start TTS early for voice flows
-        if (voiceFlowRef.current && settings.voiceEnabled && voiceAgentRef.current) {
+        if (isVoiceFlow && settings.voiceEnabled && voiceAgentRef.current) {
           voiceAgentRef.current.speak(aiResponse).catch(console.error);
         }
 
-        // 2026: 5-Word Look-Ahead text rendering
+        // ========================================
+        // STEP 6: PROGRESSIVE RENDERING (5-Word Look-Ahead)
+        // ========================================
         const words = aiResponse.split(' ');
         const BUFFER_SIZE = 5;
 
         for (let i = 0; i < words.length; i++) {
+          // GUARDRAIL: Check if lock is still ours (defensive)
+          if (getLockedConversationId() !== activeId) {
+            console.error('[UNIFIED PIPELINE] Lock stolen during rendering');
+            break;
+          }
+
           // Render with buffer look-ahead
           const visibleEndIndex = Math.min(i + BUFFER_SIZE, words.length);
           const currentText = words.slice(0, visibleEndIndex).join(' ');
 
-          setConversations((prev) => {
-            const index = prev.findIndex((c) => c.id === activeId);
-            if (index === -1) return prev;
-            const updated = [...prev];
-            const conv = { ...updated[index] };
-            conv.messages = conv.messages.map((m) =>
-              m.id === assistantMsgId ? { ...m, content: currentText } : m
-            );
-            updated[index] = conv;
-            return updated;
-          });
+          // Use updateMessageContent for efficient in-place update (no persist during stream)
+          await updateMessageContent(activeId, assistantMsgId, currentText, false);
 
-          // 2026: Typing speed - 150ms per word (synced with TTS estimation)
+          // Typing speed - 150ms per word (synced with TTS estimation)
           await new Promise((resolve) => setTimeout(resolve, 150));
         }
 
@@ -201,39 +285,45 @@ export const useAppLogic = () => {
         setActiveSyncText('');
         setActiveSyncMessageId(null);
 
-        // === STEP 7: FINAL PERSISTENCE WITH COMPLETE AI RESPONSE ===
-        // Re-fetch conversation to get latest state
-        setConversations((prev) => {
-          const index = prev.findIndex((c) => c.id === activeId);
-          if (index === -1) return prev;
+        // ========================================
+        // STEP 7: FINAL PERSISTENCE WITH ANALYTICS
+        // ========================================
+        // 2026 Analytics: Stop latency timer and capture response time
+        const latency = stopLatencyTimer(userMsgId);
 
-          const updated = [...prev];
-          const conv = { ...updated[index] };
-          conv.messages = conv.messages.map((m) =>
-            m.id === assistantMsgId ? { ...m, content: aiResponse } : m
-          );
-          conv.updatedAt = Date.now();
-          updated[index] = conv;
+        // Update with complete response, latency, AND persist
+        await updateMessageContent(activeId, assistantMsgId, aiResponse, true, latency || undefined);
 
-          // STRICT SAVE-ORDER: Persist final state
-          storageService.saveConversation(conv);
+        // 2026 Analytics: Update conversation-level analytics
+        if (updateConversationWithAnalytics) {
+          await updateConversationWithAnalytics(activeId, latency || undefined);
+        }
 
-          return updated;
-        });
-
-        // Reset text input active state
-        if (source === 'text') {
+        // Reset text input state
+        if (isTextFlow) {
           setIsTextInputActive(false);
         }
+
+        // ========================================
+        // STEP 8: RELEASE PIPELINE LOCK
+        // ========================================
+        releasePipelineLock(operationId);
+        return true;
+
       } catch (error: unknown) {
+        // ERROR HANDLING: Clean up state and release lock
         setIsThinking(false);
         setActiveSyncText('');
         setActiveSyncMessageId(null);
+
+        // 2026 Analytics: Cancel latency timer on error
+        cancelLatencyTimer(userMsgId);
+
         const message = error instanceof Error ? error.message : 'Failed to get response';
         voiceAgentRef.current?.setError(message);
 
         // Save failed message for retry
-        if (source === 'text') {
+        if (isTextFlow) {
           setTextInputFailed({
             text,
             retryCount: (textInputFailed?.retryCount || 0) + 1,
@@ -241,19 +331,43 @@ export const useAppLogic = () => {
           });
           setIsTextInputActive(false);
         }
+
+        // CRITICAL: Always release lock on error
+        releasePipelineLock(operationId);
+        return false;
       }
     },
     [
-      inputText,
       currentId,
       createConversation,
       addMessage,
-      conversations,
-      setConversations,
       settings.voiceEnabled,
       textInputFailed,
       isHydrationReady,
+      acquirePipelineLock,
+      releasePipelineLock,
+      isPipelineLocked,
+      getLockedConversationId,
+      updateMessageContent,
+      getConversationById,
+      // 2026 Analytics
+      startLatencyTimer,
+      stopLatencyTimer,
+      cancelLatencyTimer,
+      updateConversationWithAnalytics,
     ]
+  );
+
+  // ============================================================================
+  // 2026 UNIFIED PIPELINE: Public Send Interface (LEGACY COMPATIBILITY)
+  // ============================================================================
+  // This wraps sendMessage to maintain backward compatibility with existing code
+  const handleSend = useCallback(
+    async (textOverride?: string, source: 'text' | 'voice' = 'text') => {
+      const text = textOverride || inputText;
+      await sendMessage(text, source as InternalMessageSource);
+    },
+    [inputText, sendMessage]
   );
 
   // Voice agent with state machine and sync integration
@@ -321,14 +435,19 @@ export const useAppLogic = () => {
     setInputText(text);
   }, []);
 
-  // 2026: Text-specific send (bypasses voice entirely)
+  // ============================================================================
+  // 2026 UNIFIED PIPELINE: Text-Specific Entry Point
+  // ============================================================================
+  // Routes text input and suggestion clicks through the unified pipeline
   const handleTextSend = useCallback(
     (textOverride?: string) => {
       const text = textOverride || inputText;
       if (!text.trim()) return;
-      handleSend(text, 'text');
+      // Determine source: if textOverride provided, it's likely a suggestion click
+      const source: InternalMessageSource = textOverride ? 'suggestion' : 'text';
+      sendMessage(text, source);
     },
-    [inputText, handleSend]
+    [inputText, sendMessage]
   );
 
   // 2026: Retry failed text message
@@ -428,5 +547,8 @@ export const useAppLogic = () => {
     // 2026: State integrity exports
     isHydrationReady,
     hydrationState,
+    // 2026 UNIFIED PIPELINE: Direct access for advanced use cases
+    sendMessage,
+    isPipelineLocked,
   };
 };
