@@ -1,0 +1,7 @@
+{
+  "name": "VoxAI - Advanced Voice Assistant",
+  "description": "A production-grade AI voice assistant with real-time speech-to-text, editable messages, and high-fidelity voice responses.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
