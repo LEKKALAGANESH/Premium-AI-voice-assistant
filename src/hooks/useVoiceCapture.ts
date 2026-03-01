@@ -1,7 +1,15 @@
 // 2026 Standard: Voice Capture Engine with Smart-Silence Reset Logic
 // Features: Continuous stream, 2.5s anchor timer, min-length filter, ghost prevention
+// 2026 Premium: Detailed error detection with user-friendly messages
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  VoxError,
+  ERROR_REGISTRY,
+  getMediaError,
+  checkMicrophoneAvailability,
+  mapErrorToVoxError,
+} from '../types/errors';
 
 // === CAPTURE STATE MACHINE ===
 export type CaptureState =
@@ -51,7 +59,7 @@ export interface VoiceCaptureState {
 interface UseVoiceCaptureProps {
   onInterimUpdate?: (text: string) => void;
   onFinalSubmit?: (result: CaptureResult) => void;
-  onError?: (error: string) => void;
+  onError?: (error: string, voxError?: VoxError) => void;
   onStateChange?: (state: CaptureState) => void;
 }
 
@@ -252,14 +260,23 @@ export const useVoiceCapture = ({
       return;
     }
 
+    // === PREMIUM ERROR CHECK: Pre-flight microphone availability ===
+    const preflightError = await checkMicrophoneAvailability();
+    if (preflightError) {
+      setError(preflightError.message);
+      onError?.(preflightError.code, preflightError);
+      return;
+    }
+
     // Check for SpeechRecognition support
     const SpeechRecognitionAPI =
       (window as any).webkitSpeechRecognition ||
       (window as any).SpeechRecognition;
 
     if (!SpeechRecognitionAPI) {
-      setError('Speech recognition not supported in this browser');
-      onError?.('SPEECH_RECOGNITION_NOT_SUPPORTED');
+      const voxError = ERROR_REGISTRY.SPEECH_RECOGNITION_NOT_SUPPORTED;
+      setError(voxError.message);
+      onError?.(voxError.code, voxError);
       return;
     }
 
@@ -273,8 +290,10 @@ export const useVoiceCapture = ({
         }
       });
     } catch (err) {
-      setError('Microphone access denied');
-      onError?.('MIC_PERMISSION_DENIED');
+      // === PREMIUM ERROR: Detailed microphone error detection ===
+      const voxError = getMediaError(err as Error);
+      setError(voxError.message);
+      onError?.(voxError.code, voxError);
       return;
     }
 
@@ -348,14 +367,8 @@ export const useVoiceCapture = ({
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       if (isAbortedRef.current) return;
 
-      const errorMessages: Record<string, string> = {
-        'not-allowed': 'Microphone access denied',
-        'network': 'Network error - check connection',
-        'no-speech': 'No speech detected',
-        'aborted': 'Recognition aborted',
-      };
-
-      const message = errorMessages[event.error] || event.error;
+      // === PREMIUM ERROR: Map speech recognition errors to VoxError ===
+      const voxError = mapErrorToVoxError(event.error);
 
       // Don't report 'no-speech' as error if we have transcript
       if (event.error === 'no-speech' && transcriptBufferRef.current.trim()) {
@@ -364,8 +377,15 @@ export const useVoiceCapture = ({
         return;
       }
 
-      setError(message);
-      onError?.(event.error);
+      // Don't show "info" severity errors as actual errors (like aborted)
+      if (voxError.severity === 'info' && event.error === 'aborted') {
+        fullCleanup();
+        transitionTo('IDLE');
+        return;
+      }
+
+      setError(voxError.message);
+      onError?.(voxError.code, voxError);
       fullCleanup();
       transitionTo('IDLE');
     };
@@ -414,7 +434,9 @@ export const useVoiceCapture = ({
       recognition.start();
     } catch (e) {
       console.error('[VoiceCapture] Recognition start error:', e);
-      setError('Failed to start voice recognition');
+      const voxError = ERROR_REGISTRY.RECOGNITION_START_FAILED;
+      setError(voxError.message);
+      onError?.(voxError.code, voxError);
       fullCleanup();
       transitionTo('IDLE');
     }

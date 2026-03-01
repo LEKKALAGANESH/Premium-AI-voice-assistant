@@ -3,8 +3,9 @@
 
 import React, { useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Moon, Sun, Monitor, Download, Upload, RotateCcw, ZoomIn, ZoomOut, Accessibility, Focus } from 'lucide-react';
+import { X, Moon, Sun, Monitor, Download, Upload, RotateCcw, ZoomIn, ZoomOut, Accessibility, Focus, Keyboard } from 'lucide-react';
 import { AppSettings } from '../types';
+import { SHORTCUTS } from '../hooks/useKeyboardShortcuts';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -335,7 +336,7 @@ const SettingsModal = ({
 
                     {/* 2026: Zen Focus Mode Toggle */}
                     <div
-                      className="flex items-center justify-between bg-zinc-50 dark:bg-zinc-800 mt-4"
+                      className="flex items-center justify-between bg-zinc-50 dark:bg-zinc-800 mt-4 group"
                       style={{
                         padding: 'var(--vox-space-4)',
                         borderRadius: 'var(--vox-radius-xl)',
@@ -344,8 +345,14 @@ const SettingsModal = ({
                       <div className="flex items-center gap-3">
                         <Focus className="w-5 h-5 text-brand-500" />
                         <div>
-                          <p className="font-medium vox-text-sm" style={{ fontSize: 'var(--vox-text-sm)' }}>
+                          <p className="font-medium vox-text-sm flex items-center gap-2" style={{ fontSize: 'var(--vox-text-sm)' }}>
                             Zen Focus Mode
+                            <span
+                              className="opacity-0 group-hover:opacity-100 transition-opacity font-mono text-zinc-400 dark:text-zinc-500"
+                              style={{ fontSize: '10px' }}
+                            >
+                              {SHORTCUTS.FOCUS_MODE.display()}
+                            </span>
                           </p>
                           <p className="text-zinc-500 vox-text-xs" style={{ fontSize: 'var(--vox-text-xs)' }}>
                             Hide sidebar, center chat perfectly
@@ -420,6 +427,54 @@ const SettingsModal = ({
 
                     {/* Voice Settings */}
                     <div className="space-y-4">
+                      {/* Speak Responses (TTS for all responses) */}
+                      <div
+                        className="flex items-center justify-between bg-zinc-50 dark:bg-zinc-800 group"
+                        style={{
+                          padding: 'var(--vox-space-4)',
+                          borderRadius: 'var(--vox-radius-xl)',
+                        }}
+                      >
+                        <div>
+                          <p className="font-medium vox-text-sm flex items-center gap-2" style={{ fontSize: 'var(--vox-text-sm)' }}>
+                            Speak Responses
+                            <span
+                              className="opacity-0 group-hover:opacity-100 transition-opacity font-mono text-zinc-400 dark:text-zinc-500"
+                              style={{ fontSize: '10px' }}
+                            >
+                              {SHORTCUTS.SPEAK_RESPONSES.display()}
+                            </span>
+                          </p>
+                          <p className="text-zinc-500 vox-text-xs" style={{ fontSize: 'var(--vox-text-xs)' }}>
+                            Read AI responses aloud in text chat
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => onUpdate({ speakResponses: !settings.speakResponses })}
+                          className={clsx(
+                            "relative rounded-full transition-colors vox-touch-target",
+                            settings.speakResponses ? "bg-brand-500" : "bg-zinc-300 dark:bg-zinc-600"
+                          )}
+                          style={{
+                            width: 'clamp(2.75rem, 3vw + 1rem, 3rem)',
+                            height: 'clamp(1.5rem, 1.75vw + 0.5rem, 1.75rem)',
+                          }}
+                          role="switch"
+                          aria-checked={settings.speakResponses}
+                          aria-label="Toggle speak responses"
+                        >
+                          <div
+                            className="absolute bg-white rounded-full transition-all"
+                            style={{
+                              top: '2px',
+                              width: 'clamp(1.125rem, 1.25vw + 0.375rem, 1.25rem)',
+                              height: 'clamp(1.125rem, 1.25vw + 0.375rem, 1.25rem)',
+                              left: settings.speakResponses ? 'calc(100% - clamp(1.25rem, 1.375vw + 0.375rem, 1.375rem))' : '2px',
+                            }}
+                          />
+                        </button>
+                      </div>
+
                       {/* Whisper Mode */}
                       <div
                         className="flex items-center justify-between bg-zinc-50 dark:bg-zinc-800"

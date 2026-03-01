@@ -928,3 +928,289 @@
     padding-right: var(--vox-space-2);
   }
 }
+
+/* === VOICE TRANSLATOR STYLES === */
+
+/* Voice translator container */
+.vox-translator-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+/* Translator header */
+.vox-translator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--vox-space-3) var(--vox-space-4);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+/* Language selector panel */
+.vox-language-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--vox-space-3);
+  padding: var(--vox-space-4);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+/* Voice animation container */
+.vox-voice-animation {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--vox-space-6);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+/* Translation history scroll area */
+.vox-translation-history {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--vox-space-4);
+}
+
+/* Translator control bar */
+.vox-translator-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--vox-space-4);
+  padding: var(--vox-space-4);
+  border-top: 1px solid var(--border-primary);
+}
+
+/* Speaker indicator badges */
+.vox-speaker-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  font-size: var(--vox-text-xs);
+  font-weight: 700;
+  color: white;
+}
+
+.vox-speaker-badge.speaker-a {
+  background-color: #3b82f6; /* blue-500 */
+}
+
+.vox-speaker-badge.speaker-b {
+  background-color: #10b981; /* emerald-500 */
+}
+
+/* Translation bubble styles */
+.vox-translation-bubble {
+  padding: var(--vox-space-4);
+  border-radius: var(--vox-radius-xl);
+  margin-bottom: var(--vox-space-3);
+}
+
+.vox-translation-bubble.speaker-a {
+  background-color: #eff6ff; /* blue-50 */
+  border: 1px solid #dbeafe; /* blue-100 */
+}
+
+.vox-translation-bubble.speaker-b {
+  background-color: #ecfdf5; /* emerald-50 */
+  border: 1px solid #d1fae5; /* emerald-100 */
+}
+
+.dark .vox-translation-bubble.speaker-a {
+  background-color: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.dark .vox-translation-bubble.speaker-b {
+  background-color: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
+/* Pulse animation for listening state */
+@keyframes vox-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 0.7;
+  }
+}
+
+.vox-pulse-animation {
+  animation: vox-pulse 2s ease-in-out infinite;
+}
+
+/* Wave bars animation */
+@keyframes vox-wave {
+  0%, 100% {
+    height: 12px;
+  }
+  50% {
+    height: 32px;
+  }
+}
+
+.vox-wave-bar {
+  width: 4px;
+  border-radius: 9999px;
+  animation: vox-wave 0.8s ease-in-out infinite;
+}
+
+.vox-wave-bar:nth-child(1) { animation-delay: 0s; }
+.vox-wave-bar:nth-child(2) { animation-delay: 0.1s; }
+.vox-wave-bar:nth-child(3) { animation-delay: 0.2s; }
+.vox-wave-bar:nth-child(4) { animation-delay: 0.3s; }
+.vox-wave-bar:nth-child(5) { animation-delay: 0.4s; }
+
+/* Start button gradient */
+.vox-start-button {
+  background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+  transition: all 0.2s ease;
+}
+
+.vox-start-button:hover {
+  background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
+  transform: translateY(-1px);
+}
+
+/* Stop button gradient */
+.vox-stop-button {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  transition: all 0.2s ease;
+}
+
+.vox-stop-button:hover {
+  background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+  transform: translateY(-1px);
+}
+
+/* Mobile adjustments for translator */
+@media (max-width: 767px) {
+  .vox-language-panel {
+    flex-direction: column;
+    gap: var(--vox-space-4);
+  }
+
+  .vox-language-panel > div:first-child,
+  .vox-language-panel > div:last-child {
+    width: 100%;
+  }
+
+  .vox-translator-controls {
+    flex-wrap: wrap;
+    gap: var(--vox-space-3);
+  }
+}
+
+/* Reduced motion support for translator */
+@media (prefers-reduced-motion: reduce) {
+  .vox-pulse-animation {
+    animation: none;
+  }
+
+  .vox-wave-bar {
+    animation: none;
+    height: 20px;
+  }
+}
+
+/* === 2026 COLUMN REVEAL ANIMATION: Text reveals left-to-right === */
+/* Used when speakResponses is OFF for smooth silent text display */
+
+@keyframes vox-column-reveal {
+  0% {
+    clip-path: inset(0 100% 0 0);
+    opacity: 0.3;
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
+    opacity: 1;
+  }
+}
+
+@keyframes vox-row-fade-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Container for column reveal - applies to message content */
+.vox-column-reveal {
+  animation: vox-row-fade-in 0.15s ease-out forwards,
+             vox-column-reveal 0.6s ease-out 0.1s forwards;
+  clip-path: inset(0 100% 0 0);
+  will-change: clip-path, opacity;
+}
+
+/* Staggered reveal for multiple lines - each line 100ms delayed */
+.vox-column-reveal-line {
+  display: block;
+  opacity: 0;
+  animation: vox-row-fade-in 0.2s ease-out forwards,
+             vox-column-reveal 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards;
+  animation-fill-mode: forwards;
+}
+
+/* Line stagger delays - each subsequent line appears 100ms later */
+.vox-column-reveal-line:nth-child(1) { animation-delay: 0ms, 100ms; }
+.vox-column-reveal-line:nth-child(2) { animation-delay: 100ms, 200ms; }
+.vox-column-reveal-line:nth-child(3) { animation-delay: 200ms, 300ms; }
+.vox-column-reveal-line:nth-child(4) { animation-delay: 300ms, 400ms; }
+.vox-column-reveal-line:nth-child(5) { animation-delay: 400ms, 500ms; }
+.vox-column-reveal-line:nth-child(6) { animation-delay: 500ms, 600ms; }
+.vox-column-reveal-line:nth-child(7) { animation-delay: 600ms, 700ms; }
+.vox-column-reveal-line:nth-child(8) { animation-delay: 700ms, 800ms; }
+.vox-column-reveal-line:nth-child(n+9) { animation-delay: 800ms, 900ms; }
+
+/* Word-level stagger animation for finer grain control */
+@keyframes vox-word-reveal {
+  0% {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.vox-word-reveal {
+  display: inline-block;
+  opacity: 0;
+  animation: vox-word-reveal 0.25s ease-out forwards;
+}
+
+/* Generate word delays dynamically via CSS calc */
+.vox-word-reveal[data-index] {
+  animation-delay: calc(var(--word-index, 0) * 60ms);
+}
+
+/* Simple instant reveal fallback for very long responses */
+.vox-instant-reveal {
+  animation: vox-row-fade-in 0.3s ease-out forwards;
+}
+
+/* Reduced motion - skip animations, show immediately */
+@media (prefers-reduced-motion: reduce) {
+  .vox-column-reveal,
+  .vox-column-reveal-line,
+  .vox-word-reveal,
+  .vox-instant-reveal {
+    animation: none !important;
+    opacity: 1 !important;
+    clip-path: none !important;
+    transform: none !important;
+  }
+}

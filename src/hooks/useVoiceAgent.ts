@@ -7,6 +7,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { VoiceState, AppSettings, FailedMessage, InputMode } from '../types';
 import { voiceService, SpeechResult } from '../services/voice';
 import { useVoiceCapture, CaptureResult, CaptureState } from './useVoiceCapture';
+import { VoxError, mapErrorToVoxError, ERROR_REGISTRY } from '../types/errors';
 
 // ============================================================================
 // 2026 VOICE LIFECYCLE: State Machine Definition
@@ -131,6 +132,7 @@ interface VoiceAgentReturn {
   state: VoiceState;
   inputMode: InputMode;
   error: string | null;
+  voxError: VoxError | null; // 2026 Premium: Detailed error object
   partialTranscript: string;
   vadProgress: number;
   currentSpokenWordIndex: number;
@@ -154,7 +156,7 @@ interface VoiceAgentReturn {
   stopListening: () => void;
   speak: (text: string) => Promise<void>;
   interrupt: () => void;
-  setError: (err: string | null) => void;
+  setError: (err: string | null, voxError?: VoxError) => void;
   setInputMode: (mode: InputMode) => void;
   retryFailed: () => void;
   clearFailedMessage: () => void;
@@ -174,7 +176,8 @@ export const useVoiceAgent = ({
   // === STATE MACHINE STATE ===
   const [state, setStateRaw] = useState<VoiceState>('idle');
   const [inputMode, setInputMode] = useState<InputMode>('idle');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorRaw] = useState<string | null>(null);
+  const [voxError, setVoxError] = useState<VoxError | null>(null);
   const [partialTranscript, setPartialTranscript] = useState('');
   const [vadProgress, setVadProgress] = useState(0);
   const [currentSpokenWordIndex, setCurrentSpokenWordIndex] = useState(-1);
@@ -220,13 +223,20 @@ export const useVoiceAgent = ({
       onTranscript(result.transcript, true, result.confidence);
       onResponseComplete(result.transcript);
     },
-    onError: (err) => {
+    onError: (err, voxErr) => {
       // Stop mic timer on error
       if (micTimerRef.current) {
         window.clearInterval(micTimerRef.current);
         micTimerRef.current = null;
       }
       setMicDurationSeconds(0);
+
+      // Set VoxError for premium error display
+      if (voxErr) {
+        setVoxError(voxErr);
+      } else {
+        setVoxError(mapErrorToVoxError(err));
+      }
 
       dispatch({ type: 'ERROR', payload: err });
     },
@@ -272,6 +282,19 @@ export const useVoiceAgent = ({
   const settingsRef = useRef(settings);
   const onSyncWordChangeRef = useRef(onSyncWordChange);
 
+  // === PREMIUM ERROR HANDLER ===
+  // Wrapper that sets both string error and VoxError for premium display
+  const setError = useCallback((err: string | null, voxErr?: VoxError) => {
+    setErrorRaw(err);
+    if (err === null) {
+      setVoxError(null);
+    } else if (voxErr) {
+      setVoxError(voxErr);
+    } else {
+      setVoxError(mapErrorToVoxError(err));
+    }
+  }, []);
+
   // === STATE MACHINE DISPATCH ===
   const dispatch = useCallback((action: StateAction) => {
     setStateRaw(prev => {
@@ -282,10 +305,12 @@ export const useVoiceAgent = ({
 
     // Handle side effects based on action type
     if (action.type === 'ERROR' && 'payload' in action) {
-      setError(action.payload);
+      setErrorRaw(action.payload);
+      // VoxError should already be set by the caller
     }
     if (action.type === 'RESET') {
-      setError(null);
+      setErrorRaw(null);
+      setVoxError(null);
       setInputMode('idle');
     }
   }, []);
@@ -840,10 +865,15 @@ export const useVoiceAgent = ({
     };
   }, [stopListening]);
 
+  // Compute combined error from local state and voiceCapture
+  const combinedError = error || voiceCapture.error;
+  const combinedVoxError = voxError || (voiceCapture.error ? mapErrorToVoxError(voiceCapture.error) : null);
+
   return {
     state,
     inputMode,
-    error: error || voiceCapture.error,
+    error: combinedError,
+    voxError: combinedVoxError,
     partialTranscript: voiceCapture.fullTranscript || partialTranscript,
     vadProgress,
     currentSpokenWordIndex,

@@ -72,7 +72,8 @@ export class VoiceService {
         this.recognition.continuous = true;
         this.recognition.interimResults = true;
         this.recognition.lang = 'en-US';
-        this.recognition.maxAlternatives = 1;
+        // maxAlternatives is supported but may not be in all type definitions
+        (this.recognition as any).maxAlternatives = 1;
       }
     }
   }
@@ -139,13 +140,15 @@ export class VoiceService {
     this.speechStartTime = Date.now();
     this.wordCount = 0;
 
-    this.recognition.onresult = (event: SpeechRecognitionEvent) => {
+    this.recognition.onresult = (event) => {
+      // Cast to access resultIndex (may not be in all type definitions)
+      const speechEvent = event as any;
       let finalTranscript = '';
       let interimTranscript = '';
       let confidence = 0;
 
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
+      for (let i = speechEvent.resultIndex || 0; i < speechEvent.results.length; i++) {
+        const result = speechEvent.results[i];
         const alternative = result[0];
 
         if (result.isFinal) {

@@ -5,9 +5,11 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Conversation } from '../types';
-import { Menu, Search, Plus, Settings, X, ChevronRight } from 'lucide-react';
+import { Menu, Search, Plus, Settings, X, ChevronRight, Languages } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ConversationItem from './ConversationItem';
+import { InlineKeyboardHint, KeyboardHint } from './KeyboardHint';
+import type { SHORTCUTS } from '../hooks/useKeyboardShortcuts';
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -20,12 +22,18 @@ interface SidebarProps {
   onPin: (id: string) => void;
   onToggle: () => void;
   onOpenSettings: () => void;
+  onOpenTranslator?: () => void;
   isMobile: boolean;
   isMobileOpen: boolean;
   onMobileClose: () => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSearchClear: () => void;
+  // 2026: Controlled search state for keyboard shortcut integration
+  isSearchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  // 2026: Keyboard shortcuts display
+  shortcuts?: typeof SHORTCUTS;
 }
 
 // 2026 FOCUS MODE: Collapsed state constants
@@ -96,18 +104,28 @@ const Sidebar = ({
   onPin,
   onToggle,
   onOpenSettings,
+  onOpenTranslator,
   isMobile,
   isMobileOpen,
   onMobileClose,
   searchQuery,
   onSearchChange,
   onSearchClear,
+  isSearchOpen: controlledSearchOpen,
+  onSearchOpenChange,
+  shortcuts,
 }: SidebarProps) => {
   const sidebarRef = useRef<HTMLElement>(null);
   const firstFocusableRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  // Support both controlled and uncontrolled search state
+  const [internalSearchOpen, setInternalSearchOpen] = useState(false);
+  const isSearchOpen = controlledSearchOpen ?? internalSearchOpen;
+  const setIsSearchOpen = useCallback((open: boolean) => {
+    setInternalSearchOpen(open);
+    onSearchOpenChange?.(open);
+  }, [onSearchOpenChange]);
 
   // 2026 FOCUS MODE: Scroll position memory for list restoration
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -186,6 +204,13 @@ const Sidebar = ({
     }
   }, [isSearchOpen]);
 
+  // Sync controlled search state from parent (keyboard shortcut)
+  useEffect(() => {
+    if (controlledSearchOpen !== undefined && controlledSearchOpen !== internalSearchOpen) {
+      setInternalSearchOpen(controlledSearchOpen);
+    }
+  }, [controlledSearchOpen, internalSearchOpen]);
+
   const handleSelect = useCallback((id: string) => {
     onSelect(id);
     setOpenMenuId(null);
@@ -197,6 +222,12 @@ const Sidebar = ({
     setOpenMenuId(null);
     if (isMobile) onMobileClose();
   }, [onOpenSettings, isMobile, onMobileClose]);
+
+  const handleOpenTranslator = useCallback(() => {
+    onOpenTranslator?.();
+    setOpenMenuId(null);
+    if (isMobile) onMobileClose();
+  }, [onOpenTranslator, isMobile, onMobileClose]);
 
   const handleShare = useCallback((conv: Conversation, format: 'text' | 'markdown' | 'txt') => {
     const sanitizedTitle = conv.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -249,42 +280,52 @@ const Sidebar = ({
         style={{ padding: 'var(--vox-space-3)' }}
       >
         {/* Toggle Button - Centered when collapsed */}
-        <button
-          ref={firstFocusableRef}
-          onClick={isMobile ? onMobileClose : onToggle}
-          className="flex items-center justify-center hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors"
-          style={{
-            padding: 'var(--vox-space-2)',
-            borderRadius: 'var(--vox-radius-md)',
-            minWidth: 'var(--vox-touch-min)',
-            minHeight: 'var(--vox-touch-min)',
-          }}
-          aria-label={isMobile ? 'Close sidebar' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
-        >
-          {isMobile ? (
-            <X style={iconSize} />
-          ) : collapsed ? (
-            <ChevronRight style={iconSize} />
-          ) : (
-            <Menu style={iconSize} />
-          )}
-        </button>
-
-        {/* Search Button - Only in expanded mode */}
-        {showExpandedContent && (
+        <div className="group relative">
           <button
-            onClick={handleSearchToggle}
-            className={`flex items-center justify-center hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors ${isSearchOpen ? 'bg-zinc-200 dark:bg-zinc-800' : ''}`}
+            ref={firstFocusableRef}
+            onClick={isMobile ? onMobileClose : onToggle}
+            className="flex items-center justify-center hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors"
             style={{
               padding: 'var(--vox-space-2)',
               borderRadius: 'var(--vox-radius-md)',
               minWidth: 'var(--vox-touch-min)',
               minHeight: 'var(--vox-touch-min)',
             }}
-            aria-label={isSearchOpen ? 'Close search' : 'Search conversations'}
+            aria-label={isMobile ? 'Close sidebar' : (collapsed ? 'Expand sidebar' : 'Collapse sidebar')}
           >
-            {isSearchOpen ? <X style={iconSize} /> : <Search style={iconSize} />}
+            {isMobile ? (
+              <X style={iconSize} />
+            ) : collapsed ? (
+              <ChevronRight style={iconSize} />
+            ) : (
+              <Menu style={iconSize} />
+            )}
           </button>
+          {!isMobile && shortcuts && (
+            <KeyboardHint shortcut={shortcuts.TOGGLE_SIDEBAR.display()} position="bottom" />
+          )}
+        </div>
+
+        {/* Search Button - Only in expanded mode */}
+        {showExpandedContent && (
+          <div className="group relative">
+            <button
+              onClick={handleSearchToggle}
+              className={`flex items-center justify-center hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors ${isSearchOpen ? 'bg-zinc-200 dark:bg-zinc-800' : ''}`}
+              style={{
+                padding: 'var(--vox-space-2)',
+                borderRadius: 'var(--vox-radius-md)',
+                minWidth: 'var(--vox-touch-min)',
+                minHeight: 'var(--vox-touch-min)',
+              }}
+              aria-label={isSearchOpen ? 'Close search' : 'Search conversations'}
+            >
+              {isSearchOpen ? <X style={iconSize} /> : <Search style={iconSize} />}
+            </button>
+            {shortcuts && (
+              <KeyboardHint shortcut={shortcuts.SEARCH.display()} position="bottom" />
+            )}
+          </div>
         )}
       </div>
 
@@ -334,7 +375,7 @@ const Sidebar = ({
           </AnimatePresence>
 
           {/* NEW CHAT BUTTON - Full width */}
-          <div className="flex-shrink-0" style={{ padding: '0 var(--vox-space-3)', marginBottom: 'var(--vox-space-3)' }}>
+          <div className="flex-shrink-0 group relative" style={{ padding: '0 var(--vox-space-3)', marginBottom: 'var(--vox-space-3)' }}>
             <button
               onClick={handleNewChat}
               className="w-full flex items-center justify-center bg-brand-600 text-white hover:bg-brand-700 transition-colors"
@@ -348,6 +389,9 @@ const Sidebar = ({
             >
               <Plus style={iconSize} />
               <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>New Chat</span>
+              {shortcuts && (
+                <InlineKeyboardHint shortcut={shortcuts.NEW_CHAT.display()} className="text-white/60" />
+              )}
             </button>
           </div>
 
@@ -418,7 +462,7 @@ const Sidebar = ({
         <>
           {/* Icon-only New Chat - Centered */}
           <div
-            className="flex-shrink-0 flex justify-center"
+            className="flex-shrink-0 flex justify-center group relative"
             style={{ padding: 'var(--vox-space-3) 0' }}
           >
             <button
@@ -434,6 +478,9 @@ const Sidebar = ({
             >
               <Plus style={iconSize} />
             </button>
+            {shortcuts && (
+              <KeyboardHint shortcut={shortcuts.NEW_CHAT.display()} position="right" />
+            )}
           </div>
 
           {/* ================================================================== */}
@@ -459,27 +506,70 @@ const Sidebar = ({
       {/* FOOTER SECTION - Always Rendered, Anchored to Bottom */}
       {/* ================================================================== */}
       <div
-        className="flex-shrink-0"
-        style={{ padding: 'var(--vox-space-3)' }}
+        className="flex-shrink-0 flex flex-col"
+        style={{ padding: 'var(--vox-space-3)', gap: 'var(--vox-space-1)' }}
       >
-        <button
-          onClick={handleOpenSettings}
-          className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors w-full ${
-            isCollapsedDesktop ? 'justify-center' : ''
-          }`}
-          style={{
-            gap: isCollapsedDesktop ? '0' : 'var(--vox-space-3)',
-            padding: 'var(--vox-space-3)',
-            borderRadius: 'var(--vox-radius-lg)',
-            minHeight: 'var(--vox-touch-min)',
-          }}
-          aria-label="Settings"
-        >
-          <Settings style={iconSize} />
-          {showExpandedContent && (
-            <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>Settings</span>
+        {/* Voice Translator Button */}
+        {onOpenTranslator && (
+          <div className="group relative">
+            <button
+              onClick={handleOpenTranslator}
+              className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors w-full ${
+                isCollapsedDesktop ? 'justify-center' : ''
+              }`}
+              style={{
+                gap: isCollapsedDesktop ? '0' : 'var(--vox-space-3)',
+                padding: 'var(--vox-space-3)',
+                borderRadius: 'var(--vox-radius-lg)',
+                minHeight: 'var(--vox-touch-min)',
+              }}
+              aria-label="Voice Translator"
+            >
+              <Languages style={iconSize} />
+              {showExpandedContent && (
+                <>
+                  <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>Translator</span>
+                  {shortcuts && (
+                    <InlineKeyboardHint shortcut={shortcuts.TRANSLATOR.display()} />
+                  )}
+                </>
+              )}
+            </button>
+            {isCollapsedDesktop && shortcuts && (
+              <KeyboardHint shortcut={shortcuts.TRANSLATOR.display()} position="right" />
+            )}
+          </div>
+        )}
+
+        {/* Settings Button */}
+        <div className="group relative">
+          <button
+            onClick={handleOpenSettings}
+            className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors w-full ${
+              isCollapsedDesktop ? 'justify-center' : ''
+            }`}
+            style={{
+              gap: isCollapsedDesktop ? '0' : 'var(--vox-space-3)',
+              padding: 'var(--vox-space-3)',
+              borderRadius: 'var(--vox-radius-lg)',
+              minHeight: 'var(--vox-touch-min)',
+            }}
+            aria-label="Settings"
+          >
+            <Settings style={iconSize} />
+            {showExpandedContent && (
+              <>
+                <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>Settings</span>
+                {shortcuts && (
+                  <InlineKeyboardHint shortcut={shortcuts.SETTINGS.display()} />
+                )}
+              </>
+            )}
+          </button>
+          {isCollapsedDesktop && shortcuts && (
+            <KeyboardHint shortcut={shortcuts.SETTINGS.display()} position="right" />
           )}
-        </button>
+        </div>
       </div>
     </div>
   );

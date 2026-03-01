@@ -73,6 +73,9 @@ export const useAppLogic = () => {
   const [activeSyncText, setActiveSyncText] = useState('');
   const [activeSyncMessageId, setActiveSyncMessageId] = useState<string | null>(null);
 
+  // 2026: Column reveal animation state (when speakResponses is OFF)
+  const [columnRevealMessageId, setColumnRevealMessageId] = useState<string | null>(null);
+
   // Refs to avoid stale closures
   const voiceFlowRef = useRef(false);
   const voiceConfidenceRef = useRef(1);
@@ -252,38 +255,60 @@ export const useAppLogic = () => {
         setActiveSyncText(aiResponse);
         setActiveSyncMessageId(assistantMsgId);
 
-        // Start TTS early for voice flows
-        if (isVoiceFlow && settings.voiceEnabled && voiceAgentRef.current) {
+        // Start TTS for responses - voice flows always speak, text flows use speakResponses setting
+        const shouldSpeak = settings.voiceEnabled && voiceAgentRef.current &&
+          (isVoiceFlow || settings.speakResponses);
+        if (shouldSpeak) {
           voiceAgentRef.current.speak(aiResponse).catch(console.error);
         }
 
         // ========================================
-        // STEP 6: PROGRESSIVE RENDERING (5-Word Look-Ahead)
+        // STEP 6: RENDERING (Progressive vs Instant based on TTS)
         // ========================================
-        const words = aiResponse.split(' ');
-        const BUFFER_SIZE = 5;
+        // 2026: When speakResponses is OFF in text flow, use instant reveal
+        // with smooth column animation instead of word-by-word streaming
+        const useInstantReveal = isTextFlow && !settings.speakResponses;
 
-        for (let i = 0; i < words.length; i++) {
-          // GUARDRAIL: Check if lock is still ours (defensive)
-          if (getLockedConversationId() !== activeId) {
-            console.error('[UNIFIED PIPELINE] Lock stolen during rendering');
-            break;
+        if (useInstantReveal) {
+          // INSTANT REVEAL: Show full text immediately with column animation
+          // Rows appear fully, columns reveal with 100ms stagger via CSS
+          setColumnRevealMessageId(assistantMsgId);
+          await updateMessageContent(activeId, assistantMsgId, aiResponse, false);
+
+          // Brief pause to allow animation to start before clearing states
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } else {
+          // PROGRESSIVE RENDERING: Word-by-word with 5-word look-ahead
+          const words = aiResponse.split(' ');
+          const BUFFER_SIZE = 5;
+
+          for (let i = 0; i < words.length; i++) {
+            // GUARDRAIL: Check if lock is still ours (defensive)
+            if (getLockedConversationId() !== activeId) {
+              console.error('[UNIFIED PIPELINE] Lock stolen during rendering');
+              break;
+            }
+
+            // Render with buffer look-ahead
+            const visibleEndIndex = Math.min(i + BUFFER_SIZE, words.length);
+            const currentText = words.slice(0, visibleEndIndex).join(' ');
+
+            // Use updateMessageContent for efficient in-place update (no persist during stream)
+            await updateMessageContent(activeId, assistantMsgId, currentText, false);
+
+            // Typing speed - 150ms per word (synced with TTS estimation)
+            await new Promise((resolve) => setTimeout(resolve, 150));
           }
-
-          // Render with buffer look-ahead
-          const visibleEndIndex = Math.min(i + BUFFER_SIZE, words.length);
-          const currentText = words.slice(0, visibleEndIndex).join(' ');
-
-          // Use updateMessageContent for efficient in-place update (no persist during stream)
-          await updateMessageContent(activeId, assistantMsgId, currentText, false);
-
-          // Typing speed - 150ms per word (synced with TTS estimation)
-          await new Promise((resolve) => setTimeout(resolve, 150));
         }
 
         // Clear sync state
         setActiveSyncText('');
         setActiveSyncMessageId(null);
+
+        // Clear column reveal after animation completes (~700ms)
+        if (useInstantReveal) {
+          setTimeout(() => setColumnRevealMessageId(null), 700);
+        }
 
         // ========================================
         // STEP 7: FINAL PERSISTENCE WITH ANALYTICS
@@ -342,6 +367,7 @@ export const useAppLogic = () => {
       createConversation,
       addMessage,
       settings.voiceEnabled,
+      settings.speakResponses,
       textInputFailed,
       isHydrationReady,
       acquirePipelineLock,
@@ -544,6 +570,8 @@ export const useAppLogic = () => {
     // 2026: Sync engine exports
     activeSyncMessageId,
     getSyncStateForMessage,
+    // 2026: Column reveal animation (when speakResponses is OFF)
+    columnRevealMessageId,
     // 2026: State integrity exports
     isHydrationReady,
     hydrationState,

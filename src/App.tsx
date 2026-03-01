@@ -1,19 +1,28 @@
 // 2026 Standard: VoxAI App with Golden Ratio Layout System
 // Responsive from 320px to 4K displays with Zero Layout Shift
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect, Suspense, lazy } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
-import SettingsModal from './components/SettingsModal';
 import Header from './components/Header';
 import { useAppLogic } from './hooks/useAppLogic';
+
+// Code Splitting: Lazy load heavy components for better initial load
+const SettingsModal = lazy(() => import('./components/SettingsModal'));
+const VoiceTranslator = lazy(() => import('./components/VoiceTranslator').then(m => ({ default: m.VoiceTranslator })));
 import { useTitleSync } from './hooks/useTitleSync';
 import { useMobileSidebar } from './hooks/useMobileSidebar';
+import { useKeyboardShortcuts, SHORTCUTS } from './hooks/useKeyboardShortcuts';
+import { useErrorManager } from './hooks/useErrorManager';
 import { AlertCircle, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx } from 'clsx';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ErrorToastContainer } from './components/ErrorToast';
+
+// App view types
+type AppView = 'chat' | 'translator';
 
 export default function App() {
   const {
@@ -42,6 +51,8 @@ export default function App() {
     isVoiceLocked,
     textInputFailed,
     retryTextMessage,
+    // 2026: Column reveal animation
+    columnRevealMessageId,
   } = useAppLogic();
 
   // 2026: Mobile sidebar state management
@@ -64,6 +75,78 @@ export default function App() {
 
   // 2026: Conversational search state
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // App view state for navigation between chat and translator
+  const [currentView, setCurrentView] = useState<AppView>('chat');
+
+  // 2026 Premium: Global error management
+  const {
+    errors,
+    showError,
+    dismissError,
+  } = useErrorManager();
+
+  // Sync voiceAgent errors to premium error system
+  useEffect(() => {
+    if (voiceAgent.voxError) {
+      showError(voiceAgent.voxError);
+    }
+  }, [voiceAgent.voxError, showError]);
+
+  // 2026: Keyboard shortcuts - trigger search from sidebar ref
+  const triggerSearchOpen = useCallback(() => {
+    // If in focus mode or mobile closed, expand first
+    if (settings.focusMode) {
+      updateSettings({ focusMode: false });
+    }
+    if (isMobile && !isMobileSidebarOpen) {
+      toggleSidebar();
+    }
+    setIsSearchOpen(true);
+  }, [settings.focusMode, updateSettings, isMobile, isMobileSidebarOpen, toggleSidebar]);
+
+  // Toggle focus mode handler
+  const toggleFocusMode = useCallback(() => {
+    updateSettings({ focusMode: !settings.focusMode });
+  }, [settings.focusMode, updateSettings]);
+
+  // Toggle speak responses handler (Ctrl/Cmd + M)
+  const toggleSpeakResponses = useCallback(() => {
+    updateSettings({ speakResponses: !settings.speakResponses });
+  }, [settings.speakResponses, updateSettings]);
+
+  // Handle switching to translator view
+  const openTranslator = useCallback(() => {
+    setCurrentView('translator');
+    closeSidebar();
+  }, [closeSidebar]);
+
+  // Handle returning to chat view
+  const closeTranslator = useCallback(() => {
+    setCurrentView('chat');
+  }, []);
+
+  // 2026: Global keyboard shortcuts
+  useKeyboardShortcuts({
+    onNewChat: createConversation,
+    onOpenSettings: () => setIsSettingsOpen(true),
+    onToggleSidebar: toggleSidebar,
+    onToggleFocusMode: toggleFocusMode,
+    onOpenSearch: triggerSearchOpen,
+    onOpenTranslator: openTranslator,
+    onToggleSpeakResponses: toggleSpeakResponses,
+    disabled: {
+      // Disable sidebar toggle in focus mode (use focus mode toggle instead)
+      sidebar: settings.focusMode,
+    },
+  });
+
+  // Handle theme toggle for translator
+  const handleThemeToggle = useCallback(() => {
+    const nextTheme = settings.theme === 'dark' ? 'light' : 'dark';
+    updateSettings({ theme: nextTheme });
+  }, [settings.theme, updateSettings]);
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
@@ -82,6 +165,27 @@ export default function App() {
       conv.messages.some(msg => msg.content.toLowerCase().includes(query))
     );
   }, [conversations, searchQuery]);
+
+  // Render Voice Translator view
+  if (currentView === 'translator') {
+    return (
+      <ErrorBoundary>
+        <div className="h-screen w-screen bg-white dark:bg-zinc-950">
+          <Suspense fallback={
+            <div className="flex items-center justify-center h-full">
+              <div className="animate-pulse text-zinc-500">Loading translator...</div>
+            </div>
+          }>
+            <VoiceTranslator
+              theme={settings.theme}
+              onThemeToggle={handleThemeToggle}
+              onBack={closeTranslator}
+            />
+          </Suspense>
+        </div>
+      </ErrorBoundary>
+    );
+  }
 
   return (
     <ErrorBoundary>
@@ -112,12 +216,16 @@ export default function App() {
               onPin={togglePin}
               onToggle={toggleSidebar}
               onOpenSettings={() => setIsSettingsOpen(true)}
+              onOpenTranslator={openTranslator}
               isMobile={isMobile}
               isMobileOpen={isMobileSidebarOpen}
               onMobileClose={closeSidebar}
               searchQuery={searchQuery}
               onSearchChange={handleSearchChange}
               onSearchClear={handleSearchClear}
+              isSearchOpen={isSearchOpen}
+              onSearchOpenChange={setIsSearchOpen}
+              shortcuts={SHORTCUTS}
             />
           </div>
         )}
@@ -145,54 +253,13 @@ export default function App() {
             hasActiveConversation={!!currentConversation && currentConversation.messages.length > 0}
           />
 
-          {/* Error notification - centered in container */}
-          <AnimatePresence>
-            {voiceAgent.error && (
-              <motion.div
-                initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="absolute top-4 left-1/2 -translate-x-1/2 z-50 px-4"
-                style={{ width: 'var(--vox-container-width)', maxWidth: 'var(--vox-container-max)' }}
-              >
-                <div
-                  className="bg-red-50 dark:bg-red-900/20 vox-border-thin border-red-200 dark:border-red-800 flex items-center shadow-xl"
-                  style={{
-                    padding: 'var(--vox-space-4)',
-                    borderRadius: 'var(--vox-radius-xl)',
-                    gap: 'var(--vox-space-3)',
-                  }}
-                >
-                  <AlertCircle
-                    className="text-red-600 dark:text-red-400 shrink-0"
-                    style={{ width: 'clamp(1.125rem, 1.25vw + 0.5rem, 1.25rem)', height: 'clamp(1.125rem, 1.25vw + 0.5rem, 1.25rem)' }}
-                  />
-                  <p
-                    className="font-medium text-red-800 dark:text-red-200 flex-1 vox-text-sm"
-                    style={{ fontSize: 'var(--vox-text-sm)' }}
-                  >
-                    {voiceAgent.error}
-                  </p>
-                  <button
-                    onClick={() => voiceAgent.setError(null)}
-                    className="hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors vox-touch-target flex items-center justify-center"
-                    style={{
-                      padding: 'var(--vox-space-1)',
-                      borderRadius: 'var(--vox-radius-md)',
-                      minWidth: 'var(--vox-touch-min)',
-                      minHeight: 'var(--vox-touch-min)',
-                    }}
-                    aria-label="Dismiss error"
-                  >
-                    <X
-                      className="text-red-600 dark:text-red-400"
-                      style={{ width: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)', height: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)' }}
-                    />
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* 2026 Premium Error Toast System */}
+          <ErrorToastContainer
+            errors={errors}
+            onDismiss={dismissError}
+            onRetry={() => voiceAgent.startListening()}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+          />
 
           <ChatWindow
             messages={currentConversation?.messages || []}
@@ -206,18 +273,21 @@ export default function App() {
             textInputFailed={textInputFailed}
             retryTextMessage={retryTextMessage}
             focusMode={settings.focusMode}
+            columnRevealMessageId={columnRevealMessageId}
           />
         </main>
 
-        <SettingsModal
-          isOpen={isSettingsOpen}
-          onClose={() => setIsSettingsOpen(false)}
-          settings={settings}
-          onUpdate={updateSettings}
-          onReset={handleReset}
-          onExport={handleExport}
-          onImport={handleImport}
-        />
+        <Suspense fallback={null}>
+          <SettingsModal
+            isOpen={isSettingsOpen}
+            onClose={() => setIsSettingsOpen(false)}
+            settings={settings}
+            onUpdate={updateSettings}
+            onReset={handleReset}
+            onExport={handleExport}
+            onImport={handleImport}
+          />
+        </Suspense>
       </div>
     </ErrorBoundary>
   );

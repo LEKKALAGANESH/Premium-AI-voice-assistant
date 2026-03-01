@@ -38,6 +38,8 @@ interface ChatWindowProps {
   textInputFailed?: FailedMessage | null;
   retryTextMessage?: () => void;
   focusMode?: boolean;
+  // 2026: Column reveal animation for instant text display (when speakResponses is OFF)
+  columnRevealMessageId?: string | null;
 }
 
 const ChatWindow = ({
@@ -52,6 +54,7 @@ const ChatWindow = ({
   textInputFailed,
   retryTextMessage,
   focusMode = false,
+  columnRevealMessageId,
 }: ChatWindowProps) => {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const regionId = useId();
@@ -204,7 +207,10 @@ const ChatWindow = ({
                 increaseViewportBy={{ top: 200, bottom: 200 }}
                 itemContent={(_, msg) => (
                   <div className="vox-4k-compact-messages" style={{ paddingBottom: 'var(--vox-space-2)' }}>
-                    <MessageBubble message={msg} />
+                    <MessageBubble
+                      message={msg}
+                      useColumnReveal={msg.id === columnRevealMessageId}
+                    />
                   </div>
                 )}
                 className="custom-scrollbar"

@@ -44,6 +44,7 @@ interface MessageBubbleProps {
   syncState?: SyncState;
   isSpeaking?: boolean;
   showMetadata?: boolean; // 2026 Analytics: Toggle for timestamps and performance badges
+  useColumnReveal?: boolean; // 2026: Column reveal animation when speakResponses is OFF
 }
 
 // === WORD COMPONENT (memoized for performance) ===
@@ -85,7 +86,7 @@ const Word = memo(({ word, state, isLastWord }: WordProps) => {
 Word.displayName = 'Word';
 
 // === MAIN COMPONENT ===
-const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetadata = true }: MessageBubbleProps) => {
+const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetadata = true, useColumnReveal = false }: MessageBubbleProps) => {
   const isAssistant = message.role === 'assistant';
   const [copied, setCopied] = useState(false);
 
@@ -129,6 +130,19 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
       );
     }
 
+    // 2026: Column reveal animation when speakResponses is OFF
+    // Full text appears with smooth left-to-right column reveal
+    if (isAssistant && useColumnReveal) {
+      return (
+        <>
+          <GhostLabel>{ghostLabelText}</GhostLabel>
+          <span className="vox-column-reveal">
+            {message.content}
+          </span>
+        </>
+      );
+    }
+
     // Default: render full content without sync (includes ghost label)
     return (
       <>
@@ -137,7 +151,7 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
         {message.content}
       </>
     );
-  }, [isAssistant, syncState, isSpeaking, message.content, ghostLabelText]);
+  }, [isAssistant, syncState, isSpeaking, message.content, ghostLabelText, useColumnReveal]);
 
   // Progress indicator for synced playback
   const progressBar = useMemo(() => {

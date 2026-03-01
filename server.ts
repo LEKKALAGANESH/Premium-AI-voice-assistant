@@ -5,6 +5,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { GoogleGenAI, Modality } from "@google/genai";
 import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,6 +16,67 @@ dotenv.config({ path: path.join(__dirname, ".env.local") });
 
 const db = new Database("conversations.db");
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+
+// ============================================================================
+// SECURITY: Rate Limiting Configuration
+// ============================================================================
+
+const createRateLimiter = (windowMs: number, max: number, message: string) =>
+  rateLimit({
+    windowMs,
+    max,
+    message: { error: 'RATE_LIMITED', message, retryable: true },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+// Different rate limits for different endpoints
+const chatLimiter = createRateLimiter(60 * 1000, 30, 'Too many chat requests. Please wait a moment.');
+const ttsLimiter = createRateLimiter(60 * 1000, 20, 'Too many TTS requests. Please wait a moment.');
+const translateLimiter = createRateLimiter(60 * 1000, 60, 'Too many translation requests. Please wait a moment.');
+const generalLimiter = createRateLimiter(60 * 1000, 100, 'Too many requests. Please slow down.');
+
+// ============================================================================
+// SECURITY: Input Validation Constants
+// ============================================================================
+
+const MAX_PROMPT_LENGTH = 10000;
+const MAX_HISTORY_LENGTH = 50;
+const MAX_TTS_TEXT_LENGTH = 5000;
+const ALLOWED_VOICE_NAMES = ['Charon', 'Kore', 'Fenrir', 'Aoede', 'Puck', 'Zephyr'];
+
+// ============================================================================
+// SECURITY: Validation Helpers
+// ============================================================================
+
+const validateChatInput = (prompt: unknown, history: unknown): { valid: boolean; error?: string } => {
+  if (!prompt || typeof prompt !== 'string') {
+    return { valid: false, error: 'Invalid prompt: must be a non-empty string' };
+  }
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    return { valid: false, error: `Prompt too long: maximum ${MAX_PROMPT_LENGTH} characters` };
+  }
+  if (history && !Array.isArray(history)) {
+    return { valid: false, error: 'Invalid history: must be an array' };
+  }
+  if (Array.isArray(history) && history.length > MAX_HISTORY_LENGTH) {
+    return { valid: false, error: `History too long: maximum ${MAX_HISTORY_LENGTH} messages` };
+  }
+  return { valid: true };
+};
+
+const validateTTSInput = (text: unknown, voiceName: unknown): { valid: boolean; error?: string } => {
+  if (!text || typeof text !== 'string') {
+    return { valid: false, error: 'Invalid text: must be a non-empty string' };
+  }
+  if (text.length > MAX_TTS_TEXT_LENGTH) {
+    return { valid: false, error: `Text too long: maximum ${MAX_TTS_TEXT_LENGTH} characters` };
+  }
+  if (voiceName && typeof voiceName === 'string' && !ALLOWED_VOICE_NAMES.includes(voiceName)) {
+    return { valid: false, error: `Invalid voice name. Allowed: ${ALLOWED_VOICE_NAMES.join(', ')}` };
+  }
+  return { valid: true };
+};
 
 // Initialize database
 db.exec(`
@@ -34,15 +97,47 @@ db.exec(`
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 5173;
+  const PORT = parseInt(process.env.PORT || '5173', 10);
 
-  app.use(express.json());
+  // ============================================================================
+  // SECURITY: Helmet Middleware (Security Headers)
+  // ============================================================================
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: ["'self'", "https://generativelanguage.googleapis.com"],
+        mediaSrc: ["'self'", "blob:", "data:"],
+        workerSrc: ["'self'", "blob:"],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Required for some audio APIs
+  }));
 
-  // AI Proxy Routes (Zero-Trust Architecture)
-  app.post("/api/ai/chat", async (req, res) => {
+  app.use(express.json({ limit: '1mb' })); // Limit request body size
+
+  // Apply general rate limiting to all routes
+  app.use('/api/', generalLimiter);
+
+  // ============================================================================
+  // AI Proxy Routes (Zero-Trust Architecture with Validation)
+  // ============================================================================
+
+  app.post("/api/ai/chat", chatLimiter, async (req, res) => {
     const { prompt, history } = req.body;
-    console.log(`Chat Request - Prompt: "${prompt}", History Length: ${history?.length || 0}`);
-    
+
+    // Input validation
+    const validation = validateChatInput(prompt, history);
+    if (!validation.valid) {
+      return res.status(400).json({ error: 'INVALID_INPUT', message: validation.error });
+    }
+
+    console.log(`Chat Request - Prompt: "${prompt?.substring(0, 50)}...", History Length: ${history?.length || 0}`);
+
     try {
       const contents = history.map((m: any) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
@@ -72,8 +167,15 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ai/tts", async (req, res) => {
+  app.post("/api/ai/tts", ttsLimiter, async (req, res) => {
     const { text, voiceName } = req.body;
+
+    // Input validation
+    const validation = validateTTSInput(text, voiceName);
+    if (!validation.valid) {
+      return res.status(400).json({ error: 'INVALID_INPUT', message: validation.error });
+    }
+
     try {
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
@@ -93,6 +195,125 @@ async function startServer() {
     } catch (error) {
       console.error('TTS Proxy Error:', error);
       res.status(500).json({ error: 'TTS_FAILED' });
+    }
+  });
+
+  // Voice Translator API Route with enhanced error handling
+  app.post("/api/ai/translate", translateLimiter, async (req, res) => {
+    const { text, sourceLanguage, targetLanguage } = req.body;
+
+    // Validation
+    if (!text || !sourceLanguage || !targetLanguage) {
+      return res.status(400).json({
+        error: "MISSING_FIELDS",
+        message: "Missing required fields",
+        details: "Required: text, sourceLanguage, targetLanguage",
+        retryable: false,
+      });
+    }
+
+    const trimmedText = (text || '').trim();
+    if (trimmedText.length === 0) {
+      return res.status(400).json({
+        error: "INVALID_INPUT",
+        message: "Text is empty",
+        retryable: false,
+      });
+    }
+
+    if (trimmedText.length > 5000) {
+      return res.status(400).json({
+        error: "INVALID_INPUT",
+        message: "Text too long",
+        details: "Maximum 5000 characters allowed",
+        retryable: false,
+      });
+    }
+
+    console.log(`[Translate] ${sourceLanguage} -> ${targetLanguage}, length: ${trimmedText.length}`);
+
+    try {
+      const systemPrompt = `You are a real-time voice translator mediating a conversation between two people speaking different languages in the same room.
+
+CRITICAL RULES:
+1. ONLY output the direct translation. Never add commentary, explanations, or your own words.
+2. Preserve the speaker's tone, intent, and emotion in the translation.
+3. Use natural, conversational language appropriate for spoken communication.
+4. If the input contains greetings, questions, or expressions, translate them naturally.
+5. Never say things like "The person said..." or "They are asking..." - just translate directly.
+6. Handle colloquialisms and idioms by finding equivalent expressions in the target language.
+7. Keep the same level of formality as the original speech.
+8. If the input is unclear or incomplete, translate what you can understand naturally.
+9. For Indian languages, be particularly careful with:
+   - Respectful forms (आप/तुम, formal/informal)
+   - Regional expressions and idioms
+   - Honorifics and titles
+   - Script-specific nuances`;
+
+      const prompt = `Translate the following ${sourceLanguage} text to ${targetLanguage}. Output ONLY the translation, nothing else:
+
+"${trimmedText}"`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.3,
+          maxOutputTokens: 1024,
+        },
+      });
+
+      const rawText = response.text || "";
+      const translatedText = rawText.trim().replace(/^["']|["']$/g, "").trim();
+
+      if (!translatedText) {
+        console.warn("[Translate] Empty result");
+        return res.status(422).json({
+          error: "EMPTY_RESULT",
+          message: "Translation returned empty",
+          retryable: true,
+        });
+      }
+
+      console.log(`[Translate] Success, output length: ${translatedText.length}`);
+      res.json({
+        translatedText,
+        sourceLanguage,
+        targetLanguage,
+        originalLength: trimmedText.length,
+        translatedLength: translatedText.length,
+      });
+    } catch (error: any) {
+      console.error("[Translate] Error:", error);
+
+      // Handle specific errors
+      const errorMessage = error?.message || '';
+      const errorStatus = error?.status || error?.code;
+
+      if (errorStatus === 429 || errorMessage.includes('quota') || errorMessage.includes('rate')) {
+        return res.status(429).json({
+          error: "RATE_LIMITED",
+          message: "Translation service is busy",
+          details: "Please wait a moment and try again",
+          retryable: true,
+        });
+      }
+
+      if (errorStatus === 503 || errorStatus === 500) {
+        return res.status(503).json({
+          error: "SERVICE_UNAVAILABLE",
+          message: "Translation service temporarily unavailable",
+          retryable: true,
+        });
+      }
+
+      res.status(500).json({
+        error: "TRANSLATION_FAILED",
+        message: "Translation failed",
+        details: errorMessage || "Unknown error",
+        retryable: true,
+      });
     }
   });
 

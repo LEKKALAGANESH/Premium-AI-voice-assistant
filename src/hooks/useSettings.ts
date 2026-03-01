@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   voiceName: 'Charon',
   whisperMode: false,
   speechRate: 1.0,
+  speakResponses: true, // 2026: Speak all AI responses (text and voice flows)
   // 2026 Standard: Accessibility settings
   accessibilityAnnouncements: true,
   reducedMotion: false,

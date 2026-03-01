@@ -77,6 +77,7 @@ export interface AppSettings {
   voiceName: string;
   whisperMode: boolean;
   speechRate: number;
+  speakResponses: boolean; // 2026: Speak all AI responses (not just voice flow)
   accessibilityAnnouncements: boolean; // WCAG 2.2: aria-live toggle
   reducedMotion: boolean; // WCAG 2.2: respect prefers-reduced-motion
   uiScale: number; // Global UI scale factor (0.8 - 1.4, default 1.0)
