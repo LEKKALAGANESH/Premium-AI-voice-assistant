@@ -1,6 +1,12 @@
 // useVoiceManager - 100/100 Production-Ready Voice Mediation Hook
-// Final Fixes: <200ms Barge-in, Double-talk Detection, Low Volume Warning, Network Handling
-// State Machine with strict locking to prevent echo loops
+// FINAL FIX: Recursive Conversation Loop
+// Listen -> Translate -> Speak -> (wait for voice to end) -> Auto-Listen
+//
+// Key Fixes:
+// 1. Global Utterance Storage - Prevents Chrome GC killing audio mid-sentence
+// 2. Re-Activation Loop - Explicit recognition.start() after 300ms in onend
+// 3. Audio Context Resume - Wakes up browser audio engine on start
+// 4. Error Recovery - Auto-restart on no-speech errors
 
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
@@ -12,6 +18,18 @@ import type {
   LanguageCode,
 } from '../types/translator';
 import { DEFAULT_MEDIATOR_CONFIG } from '../types/translator';
+
+// ============================================================================
+// GLOBAL UTTERANCE STORAGE (Prevents Chrome GC)
+// ============================================================================
+
+// Extend Window interface for TypeScript
+declare global {
+  interface Window {
+    __voxai_utterance?: SpeechSynthesisUtterance | null;
+    __voxai_recognition?: SpeechRecognition | null;
+  }
+}
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -90,10 +108,12 @@ export interface VoiceManagerReturn extends VoiceManagerState, VoiceManagerActio
 const ECHO_PREVENTION_DELAY_MS = 350;
 const TRANSLATION_TIMEOUT_MS = 15000;
 const MAX_CONTEXT_ENTRIES = 5;
-const BARGE_IN_TARGET_MS = 200; // Target latency for barge-in
-const LOW_VOLUME_THRESHOLD = 0.05; // Below this is considered too quiet
-const LOW_VOLUME_DURATION_THRESHOLD_S = 3; // Seconds before warning
-const DOUBLE_TALK_THRESHOLD = 0.3; // Sustained high volume during bot speech
+const BARGE_IN_TARGET_MS = 200;
+const LOW_VOLUME_THRESHOLD = 0.05;
+const LOW_VOLUME_DURATION_THRESHOLD_S = 3;
+const DOUBLE_TALK_THRESHOLD = 0.3;
+const REACTIVATION_DELAY_MS = 300; // Delay before restarting recognition
+const NO_SPEECH_RESTART_DELAY_MS = 500; // Delay after no-speech error
 
 // ============================================================================
 // HAPTIC FEEDBACK UTILITY
@@ -102,9 +122,9 @@ const DOUBLE_TALK_THRESHOLD = 0.3; // Sustained high volume during bot speech
 const triggerHapticFeedback = (pattern: 'success' | 'warning' | 'error' = 'success') => {
   if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
     const patterns = {
-      success: [50], // Short pulse
-      warning: [50, 50, 50], // Triple pulse
-      error: [100, 50, 100], // Long-short-long
+      success: [50],
+      warning: [50, 50, 50],
+      error: [100, 50, 100],
     };
     try {
       navigator.vibrate(patterns[pattern]);
@@ -232,10 +252,14 @@ export function useVoiceManager(
   const isProcessingRef = useRef(false);
   const isMicLockedRef = useRef(false);
   const isBotSpeakingRef = useRef(false);
+  const currentSpeakerRef = useRef<Participant | null>(null);
 
   // Low volume tracking refs
   const lowVolumeStartRef = useRef<number | null>(null);
   const lowVolumeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Re-activation timeout ref
+  const reactivationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep refs in sync
   useEffect(() => {
@@ -246,27 +270,52 @@ export function useVoiceManager(
     isBotSpeakingRef.current = isBotSpeaking;
   }, [isBotSpeaking]);
 
-  // ========== AUDIO CONTEXT INITIALIZATION (iOS Safari) ==========
+  useEffect(() => {
+    currentSpeakerRef.current = currentSpeaker;
+  }, [currentSpeaker]);
+
+  // ========== AUDIO CONTEXT INITIALIZATION (iOS Safari & Chrome) ==========
+  // This "wakes up" the browser's audio engine which often blocks "autoplay" speech
   const initializeAudio = useCallback(async (): Promise<boolean> => {
     if (!hasMounted) return false;
 
     try {
+      console.log('[VoiceManager] Initializing audio engine...');
+
+      // Create or resume AudioContext
       if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new AudioContext();
       }
 
       if (audioContextRef.current.state === 'suspended') {
         await audioContextRef.current.resume();
+        console.log('[VoiceManager] AudioContext resumed');
       }
 
+      // Wake up speechSynthesis with a silent utterance
+      // This is CRITICAL for Chrome - without this, the first real utterance may be silent
       if (window.speechSynthesis) {
-        const initUtterance = new SpeechSynthesisUtterance('');
-        initUtterance.volume = 0;
-        window.speechSynthesis.speak(initUtterance);
+        // Cancel any pending speech
         window.speechSynthesis.cancel();
+
+        // Create and speak a silent utterance to "prime" the engine
+        const silentUtterance = new SpeechSynthesisUtterance('');
+        silentUtterance.volume = 0;
+        silentUtterance.rate = 1;
+
+        // Store globally to prevent GC
+        window.__voxai_utterance = silentUtterance;
+
+        window.speechSynthesis.speak(silentUtterance);
+
+        // Wait a tiny bit then cancel
+        await new Promise(resolve => setTimeout(resolve, 100));
+        window.speechSynthesis.cancel();
+
+        console.log('[VoiceManager] SpeechSynthesis primed');
       }
 
-      console.log('[VoiceManager] Audio initialized');
+      console.log('[VoiceManager] Audio engine initialized successfully');
       return true;
     } catch (err) {
       console.error('[VoiceManager] Audio init failed:', err);
@@ -284,6 +333,7 @@ export function useVoiceManager(
         setAvailableVoices(voices);
         setVoicesReady(true);
         setVoicesLoading(false);
+        console.log(`[VoiceManager] Loaded ${voices.length} voices`);
       }
     };
 
@@ -403,11 +453,18 @@ export function useVoiceManager(
     setIsMicLocked(true);
     isMicLockedRef.current = true;
 
+    // Clear any pending reactivation
+    if (reactivationTimeoutRef.current) {
+      clearTimeout(reactivationTimeoutRef.current);
+      reactivationTimeoutRef.current = null;
+    }
+
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
       } catch (e) {}
       recognitionRef.current = null;
+      window.__voxai_recognition = null;
     }
   }, []);
 
@@ -417,10 +474,19 @@ export function useVoiceManager(
     isMicLockedRef.current = false;
   }, []);
 
+  // ========== FORWARD DECLARATION FOR CIRCULAR REFERENCE ==========
+  const startListeningRef = useRef<(speaker: Participant) => void>(() => {});
+
   // ========== FORCE STOP AUDIO (<200ms Barge-in) ==========
   const forceStopAudio = useCallback(() => {
     const stopStart = performance.now();
     console.log('[VoiceManager] FORCE STOP AUDIO initiated');
+
+    // Clear reactivation timeout
+    if (reactivationTimeoutRef.current) {
+      clearTimeout(reactivationTimeoutRef.current);
+      reactivationTimeoutRef.current = null;
+    }
 
     // Increment operation token to invalidate all pending operations
     operationTokenRef.current += 10;
@@ -434,15 +500,15 @@ export function useVoiceManager(
       for (let i = 0; i < 5; i++) {
         window.speechSynthesis.cancel();
       }
-      // Also try pause then cancel (some browsers respond better)
       window.speechSynthesis.pause();
       window.speechSynthesis.cancel();
     }
 
-    // Clear utterance reference
+    // Clear utterance references
     if (utteranceRef.current) {
       utteranceRef.current = null;
     }
+    window.__voxai_utterance = null;
 
     // Trigger haptic feedback for mobile users
     triggerHapticFeedback('success');
@@ -457,16 +523,17 @@ export function useVoiceManager(
       console.log(`[VoiceManager] Barge-in SUCCESS: ${latency.toFixed(0)}ms`);
     }
 
-    // Unlock microphone immediately (no delay for barge-in)
+    // Unlock microphone immediately
     unlockMicrophone();
 
     return latency;
   }, [unlockMicrophone]);
 
-  // ========== SPEECH SYNTHESIS ==========
+  // ========== SPEECH SYNTHESIS WITH RECURSIVE LOOP ==========
   const speak = useCallback(async (
     text: string,
-    languageCode: LanguageCode
+    languageCode: LanguageCode,
+    nextSpeaker: Participant
   ): Promise<void> => {
     if (!browserSupport.speechSynthesis || !text.trim()) {
       return;
@@ -478,8 +545,9 @@ export function useVoiceManager(
       lockMicrophone();
       setIsBotSpeaking(true);
       isBotSpeakingRef.current = true;
-      setIsDoubleTalk(false); // Reset double-talk flag
+      setIsDoubleTalk(false);
 
+      // Cancel any existing speech
       window.speechSynthesis.cancel();
 
       setTimeout(() => {
@@ -501,37 +569,78 @@ export function useVoiceManager(
           utterance.voice = voice;
         }
 
+        // ============================================================
+        // CRITICAL FIX: Store utterance globally to prevent Chrome GC
+        // ============================================================
         utteranceRef.current = utterance;
+        window.__voxai_utterance = utterance;
 
         const timeout = setTimeout(() => {
           console.warn('[VoiceManager] Speech timeout');
           window.speechSynthesis.cancel();
         }, 30000);
 
+        // Chrome bug workaround: resume if paused
         let resumeInterval: ReturnType<typeof setInterval> | null = null;
 
         utterance.onstart = () => {
           console.log('[VoiceManager] Speech started');
+          // Chrome sometimes pauses randomly, keep resuming
           resumeInterval = setInterval(() => {
             if (window.speechSynthesis.paused) {
+              console.log('[VoiceManager] Resuming paused speech');
               window.speechSynthesis.resume();
             }
           }, 200);
         };
 
+        // ============================================================
+        // CRITICAL FIX: Re-Activation Loop
+        // When speech ends, wait 300ms then restart recognition
+        // ============================================================
         utterance.onend = () => {
-          console.log('[VoiceManager] Speech ended');
+          console.log('[VoiceManager] Speech ended - starting re-activation loop');
           clearTimeout(timeout);
           if (resumeInterval) clearInterval(resumeInterval);
+
+          // Clear global reference
           utteranceRef.current = null;
+          window.__voxai_utterance = null;
+
           setIsBotSpeaking(false);
           isBotSpeakingRef.current = false;
           setIsDoubleTalk(false);
 
-          setTimeout(() => {
-            if (token === operationTokenRef.current) {
-              unlockMicrophone();
+          // Wait for echo prevention, then explicitly restart recognition
+          reactivationTimeoutRef.current = setTimeout(() => {
+            if (token !== operationTokenRef.current) {
+              console.log('[VoiceManager] Token mismatch, skipping reactivation');
+              resolve();
+              return;
             }
+
+            unlockMicrophone();
+
+            // ============================================================
+            // RECURSIVE LOOP: Explicitly start listening again
+            // ============================================================
+            if (shouldContinueRef.current && config.autoListen && config.continuousMode) {
+              console.log(`[VoiceManager] Re-activating listener for Speaker ${nextSpeaker}`);
+              setCurrentSpeaker(nextSpeaker);
+              currentSpeakerRef.current = nextSpeaker;
+
+              // Slight additional delay before starting recognition
+              setTimeout(() => {
+                if (shouldContinueRef.current && !isMicLockedRef.current) {
+                  startListeningRef.current(nextSpeaker);
+                }
+              }, 100);
+            } else {
+              console.log('[VoiceManager] Auto-listen disabled, going idle');
+              setState('idle');
+              setIsActive(false);
+            }
+
             resolve();
           }, ECHO_PREVENTION_DELAY_MS);
         };
@@ -540,25 +649,33 @@ export function useVoiceManager(
           console.error('[VoiceManager] Speech error:', event.error);
           clearTimeout(timeout);
           if (resumeInterval) clearInterval(resumeInterval);
+
           utteranceRef.current = null;
+          window.__voxai_utterance = null;
+
           setIsBotSpeaking(false);
           isBotSpeakingRef.current = false;
           setIsDoubleTalk(false);
-          unlockMicrophone();
 
+          // Still trigger re-activation on interrupted/canceled (user barged in)
           if (event.error === 'interrupted' || event.error === 'canceled') {
+            unlockMicrophone();
             resolve();
           } else {
+            unlockMicrophone();
             reject(new Error(`Speech error: ${event.error}`));
           }
         };
 
+        console.log('[VoiceManager] Speaking:', text.substring(0, 50) + '...');
         window.speechSynthesis.speak(utterance);
       }, 100);
     });
   }, [
     browserSupport.speechSynthesis,
     config.speechRate,
+    config.autoListen,
+    config.continuousMode,
     getVoiceForLanguage,
     lockMicrophone,
     unlockMicrophone
@@ -642,9 +759,10 @@ export function useVoiceManager(
 
     setState('processing');
 
-    const speaker = currentSpeaker;
+    const speaker = currentSpeakerRef.current;
     const sourceConfig = speaker === 'A' ? config.languageA : config.languageB;
     const targetConfig = speaker === 'A' ? config.languageB : config.languageA;
+    const nextSpeaker: Participant = speaker === 'A' ? 'B' : 'A';
 
     try {
       const translatedText = await translateText(
@@ -676,53 +794,71 @@ export function useVoiceManager(
 
       setState(speaker === 'A' ? 'speaking_b' : 'speaking_a');
 
+      // Speak and pass next speaker for recursive loop
       try {
-        await speak(translatedText, targetConfig.code);
+        await speak(translatedText, targetConfig.code, nextSpeaker);
       } catch (speakErr) {
         console.warn('[VoiceManager] Speech failed:', speakErr);
-      }
-
-      if (shouldContinueRef.current && config.autoListen && config.continuousMode) {
-        if (token === operationTokenRef.current && !isMicLockedRef.current) {
-          const nextSpeaker: Participant = speaker === 'A' ? 'B' : 'A';
+        // Even on speech error, try to continue the loop
+        if (shouldContinueRef.current && config.autoListen && config.continuousMode) {
+          unlockMicrophone();
           setCurrentSpeaker(nextSpeaker);
-
           setTimeout(() => {
-            if (shouldContinueRef.current && token === operationTokenRef.current) {
-              startListening(nextSpeaker);
+            if (shouldContinueRef.current && !isMicLockedRef.current) {
+              startListeningRef.current(nextSpeaker);
             }
-          }, 200);
+          }, REACTIVATION_DELAY_MS);
         }
-      } else {
-        setState('idle');
-        setIsActive(false);
       }
+
     } catch (err) {
       console.error('[VoiceManager] Translation error:', err);
       setError(err instanceof Error ? err.message : 'Translation failed');
       setErrorCode('TRANSLATION_ERROR');
       setIsRecoverable(true);
       setState('error');
-
-      // Haptic feedback for error
       triggerHapticFeedback('error');
+
+      // Even on translation error, restart listening after a delay
+      if (shouldContinueRef.current && config.continuousMode) {
+        setTimeout(() => {
+          if (shouldContinueRef.current && !isMicLockedRef.current) {
+            clearError();
+            startListeningRef.current(speaker || 'A');
+          }
+        }, 2000);
+      }
     } finally {
       isProcessingRef.current = false;
     }
-  }, [currentSpeaker, config, history, translateText, speak]);
+  }, [config, history, translateText, speak, unlockMicrophone]);
 
-  // ========== START LISTENING ==========
+  // ========== CLEAR ERROR ==========
+  const clearError = useCallback(() => {
+    setError(null);
+    setErrorCode(null);
+    setIsNetworkError(false);
+    if (state === 'error') {
+      setState('idle');
+    }
+  }, [state]);
+
+  // ========== START LISTENING WITH ERROR RECOVERY ==========
   const startListening = useCallback((speaker: Participant) => {
-    if (!hasMounted || !browserSupport.speechRecognition) return;
+    if (!hasMounted || !browserSupport.speechRecognition) {
+      console.log('[VoiceManager] Cannot start listening - not supported');
+      return;
+    }
 
     if (isMicLockedRef.current || isBotSpeakingRef.current) {
-      console.log('[VoiceManager] Cannot start listening - mic locked');
+      console.log('[VoiceManager] Cannot start listening - mic locked or bot speaking');
       return;
     }
 
     const SpeechRecognitionAPI = (window as any).SpeechRecognition ||
                                   (window as any).webkitSpeechRecognition;
 
+    // Clean up existing recognition
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
@@ -738,10 +874,15 @@ export function useVoiceManager(
     (recognition as any).maxAlternatives = 1;
 
     recognitionRef.current = recognition;
+    window.__voxai_recognition = recognition;
+
+    const currentToken = operationTokenRef.current;
 
     recognition.onstart = () => {
+      console.log(`[VoiceManager] Recognition started for Speaker ${speaker}`);
       setState(speaker === 'A' ? 'listening_a' : 'listening_b');
       setCurrentSpeaker(speaker);
+      currentSpeakerRef.current = speaker;
       setIsActive(true);
       setError(null);
       setIsLowVolume(false);
@@ -749,62 +890,118 @@ export function useVoiceManager(
     };
 
     recognition.onresult = (event: any) => {
-      if (isMicLockedRef.current) return;
+      if (isMicLockedRef.current) {
+        console.log('[VoiceManager] Ignoring result - mic locked');
+        return;
+      }
 
       const result = event.results[event.resultIndex];
       const transcript = result[0].transcript;
       const confidence = result[0].confidence || 0.9;
 
       if (result.isFinal) {
+        console.log('[VoiceManager] Final result:', transcript);
         processTranslation(transcript, confidence);
       } else {
         setPartialTranscript(transcript);
       }
     };
 
+    // ============================================================
+    // ERROR RECOVERY: Auto-restart on no-speech errors
+    // ============================================================
     recognition.onerror = (event: any) => {
+      console.log('[VoiceManager] Recognition error:', event.error);
+
+      // Ignore these errors and auto-restart
       if (event.error === 'no-speech' || event.error === 'aborted') {
         if (shouldContinueRef.current && config.continuousMode && !isMicLockedRef.current) {
+          console.log('[VoiceManager] No speech detected, auto-restarting...');
           setTimeout(() => {
-            if (shouldContinueRef.current && !isMicLockedRef.current) {
+            if (shouldContinueRef.current && !isMicLockedRef.current && currentToken === operationTokenRef.current) {
               startListening(speaker);
             }
-          }, 500);
+          }, NO_SPEECH_RESTART_DELAY_MS);
         }
         return;
       }
 
+      // Handle other errors
       console.error('[VoiceManager] Recognition error:', event.error);
       setError(getErrorMessage(event.error));
       setErrorCode(event.error);
       setIsRecoverable(true);
       setState('error');
       triggerHapticFeedback('error');
+
+      // Try to recover from network errors
+      if (event.error === 'network') {
+        setIsNetworkError(true);
+        setTimeout(() => {
+          if (shouldContinueRef.current && !isMicLockedRef.current) {
+            clearError();
+            startListening(speaker);
+          }
+        }, 2000);
+      }
     };
 
+    // ============================================================
+    // END HANDLER: Auto-restart if not processing
+    // ============================================================
     recognition.onend = () => {
+      console.log('[VoiceManager] Recognition ended');
+
+      // Only auto-restart if we should continue and aren't processing
       if (
         shouldContinueRef.current &&
         config.continuousMode &&
         !isProcessingRef.current &&
         !isMicLockedRef.current &&
-        state !== 'processing' &&
-        state !== 'error'
+        !isBotSpeakingRef.current &&
+        currentToken === operationTokenRef.current
       ) {
+        console.log('[VoiceManager] Auto-restarting recognition...');
         setTimeout(() => {
-          if (shouldContinueRef.current && !isProcessingRef.current && !isMicLockedRef.current) {
-            startListening(speaker);
+          if (
+            shouldContinueRef.current &&
+            !isProcessingRef.current &&
+            !isMicLockedRef.current &&
+            !isBotSpeakingRef.current
+          ) {
+            startListening(currentSpeakerRef.current || speaker);
           }
-        }, 300);
+        }, REACTIVATION_DELAY_MS);
       }
     };
 
     try {
       recognition.start();
+      console.log(`[VoiceManager] Recognition.start() called for ${langConfig.code}`);
     } catch (err) {
       console.error('[VoiceManager] Recognition start error:', err);
+      // Try again after a delay
+      setTimeout(() => {
+        if (shouldContinueRef.current && !isMicLockedRef.current) {
+          try {
+            const newRecognition = new SpeechRecognitionAPI();
+            newRecognition.continuous = false;
+            newRecognition.interimResults = true;
+            newRecognition.lang = langConfig.code;
+            recognitionRef.current = newRecognition;
+            newRecognition.start();
+          } catch (e) {
+            console.error('[VoiceManager] Retry failed:', e);
+          }
+        }
+      }, 500);
     }
-  }, [hasMounted, browserSupport.speechRecognition, config, processTranslation, state]);
+  }, [hasMounted, browserSupport.speechRecognition, config, processTranslation, clearError]);
+
+  // Update the ref so speak() can call it
+  useEffect(() => {
+    startListeningRef.current = startListening;
+  }, [startListening]);
 
   // ========== START SESSION ==========
   const start = useCallback(async () => {
@@ -817,6 +1014,10 @@ export function useVoiceManager(
     setIsDoubleTalk(false);
 
     try {
+      // ============================================================
+      // CRITICAL: Initialize audio on user interaction
+      // This wakes up Chrome's audio engine
+      // ============================================================
       await initializeAudio();
 
       if (!voicesReady) {
@@ -840,10 +1041,11 @@ export function useVoiceManager(
       isProcessingRef.current = false;
       unlockMicrophone();
 
+      // Start the recursive loop
       startListening('A');
 
-      // Haptic feedback for successful start
       triggerHapticFeedback('success');
+      console.log('[VoiceManager] Session started successfully');
     } catch (err) {
       console.error('[VoiceManager] Start error:', err);
       setError(getErrorMessage((err as any)?.name || 'start_failed'));
@@ -872,6 +1074,12 @@ export function useVoiceManager(
 
     shouldContinueRef.current = false;
 
+    // Clear reactivation timeout
+    if (reactivationTimeoutRef.current) {
+      clearTimeout(reactivationTimeoutRef.current);
+      reactivationTimeoutRef.current = null;
+    }
+
     // Use force stop for immediate barge-in
     if (isBotSpeakingRef.current) {
       forceStopAudio();
@@ -884,11 +1092,15 @@ export function useVoiceManager(
         recognitionRef.current.abort();
       } catch (e) {}
       recognitionRef.current = null;
+      window.__voxai_recognition = null;
     }
 
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
+
+    // Clear global utterance
+    window.__voxai_utterance = null;
 
     stopAudioMonitoring();
     if (streamRef.current) {
@@ -901,6 +1113,7 @@ export function useVoiceManager(
     unlockMicrophone();
     setState('idle');
     setCurrentSpeaker(null);
+    currentSpeakerRef.current = null;
     setIsActive(false);
     setIsStarting(false);
     setPartialTranscript('');
@@ -916,12 +1129,22 @@ export function useVoiceManager(
     operationTokenRef.current += 100;
     shouldContinueRef.current = false;
 
+    // Clear all timeouts
+    if (reactivationTimeoutRef.current) {
+      clearTimeout(reactivationTimeoutRef.current);
+      reactivationTimeoutRef.current = null;
+    }
+
     // Aggressive speech cancellation
     if (window.speechSynthesis) {
       for (let i = 0; i < 5; i++) {
         window.speechSynthesis.cancel();
       }
     }
+
+    // Clear global references
+    window.__voxai_utterance = null;
+    window.__voxai_recognition = null;
 
     if (recognitionRef.current) {
       try {
@@ -946,6 +1169,7 @@ export function useVoiceManager(
 
     setState('idle');
     setCurrentSpeaker(null);
+    currentSpeakerRef.current = null;
     setIsActive(false);
     setIsStarting(false);
     setIsBotSpeaking(false);
@@ -973,23 +1197,14 @@ export function useVoiceManager(
       } catch (e) {}
     }
 
-    const nextSpeaker: Participant = currentSpeaker === 'A' ? 'B' : 'A';
+    const nextSpeaker: Participant = currentSpeakerRef.current === 'A' ? 'B' : 'A';
     startListening(nextSpeaker);
-  }, [currentSpeaker, startListening]);
+  }, [startListening]);
 
   const clearHistory = useCallback(() => {
     setHistory([]);
     setLastTranslation(null);
   }, []);
-
-  const clearError = useCallback(() => {
-    setError(null);
-    setErrorCode(null);
-    setIsNetworkError(false);
-    if (state === 'error') {
-      setState('idle');
-    }
-  }, [state]);
 
   const updateConfig = useCallback((updates: Partial<MediatorConfig>) => {
     setConfig(prev => ({ ...prev, ...updates }));
@@ -997,12 +1212,12 @@ export function useVoiceManager(
 
   const retry = useCallback(() => {
     clearError();
-    if (currentSpeaker) {
-      startListening(currentSpeaker);
+    if (currentSpeakerRef.current) {
+      startListening(currentSpeakerRef.current);
     } else {
       start();
     }
-  }, [clearError, currentSpeaker, startListening, start]);
+  }, [clearError, startListening, start]);
 
   const dismissLowVolumeWarning = useCallback(() => {
     setIsLowVolume(false);
@@ -1020,6 +1235,10 @@ export function useVoiceManager(
       shouldContinueRef.current = false;
       operationTokenRef.current++;
 
+      if (reactivationTimeoutRef.current) {
+        clearTimeout(reactivationTimeoutRef.current);
+      }
+
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -1029,6 +1248,10 @@ export function useVoiceManager(
       if (window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
+
+      // Clear global references
+      window.__voxai_utterance = null;
+      window.__voxai_recognition = null;
 
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
