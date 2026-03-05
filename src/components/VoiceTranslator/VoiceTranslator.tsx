@@ -395,6 +395,8 @@ const VoiceTranslatorInner = memo(function VoiceTranslatorInner({
           <VoiceWaveAnimation
             state={mediator.state}
             currentSpeaker={mediator.currentSpeaker}
+            onStop={mediator.stop}
+            showStopButton={mediator.isActive}
           />
 
           {/* Status message */}
