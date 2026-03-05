@@ -280,45 +280,75 @@ export function useVoiceManager(
     if (!hasMounted) return false;
 
     try {
-      console.log('[VoiceManager] Initializing audio engine...');
+      console.log('[VoiceManager] 🎵 Initializing audio engine...');
 
       // Create or resume AudioContext
       if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
         audioContextRef.current = new AudioContext();
+        console.log('[VoiceManager] ✅ AudioContext created');
       }
 
       if (audioContextRef.current.state === 'suspended') {
         await audioContextRef.current.resume();
-        console.log('[VoiceManager] AudioContext resumed');
+        console.log('[VoiceManager] ✅ AudioContext resumed from suspended');
       }
 
-      // Wake up speechSynthesis with a silent utterance
-      // This is CRITICAL for Chrome - without this, the first real utterance may be silent
+      // Wake up speechSynthesis with a TEST utterance (not silent - we want to verify it works)
       if (window.speechSynthesis) {
         // Cancel any pending speech
         window.speechSynthesis.cancel();
+        console.log('[VoiceManager] Cancelled pending speech');
 
-        // Create and speak a silent utterance to "prime" the engine
-        const silentUtterance = new SpeechSynthesisUtterance('');
-        silentUtterance.volume = 0;
-        silentUtterance.rate = 1;
+        // Wait for voices to load
+        let voices = window.speechSynthesis.getVoices();
+        if (voices.length === 0) {
+          console.log('[VoiceManager] Waiting for voices to load...');
+          await new Promise<void>((resolve) => {
+            const checkVoices = () => {
+              voices = window.speechSynthesis.getVoices();
+              if (voices.length > 0) {
+                resolve();
+              } else {
+                setTimeout(checkVoices, 100);
+              }
+            };
+            checkVoices();
+            // Timeout after 2 seconds
+            setTimeout(resolve, 2000);
+          });
+        }
+        console.log(`[VoiceManager] ✅ ${voices.length} voices available`);
+
+        // Create and speak a nearly-silent primer to unlock audio
+        const primer = new SpeechSynthesisUtterance(' '); // Single space, not empty
+        primer.volume = 0.01; // Nearly silent but not zero
+        primer.rate = 10; // Very fast
+        primer.pitch = 1;
 
         // Store globally to prevent GC
-        window.__voxai_utterance = silentUtterance;
+        window.__voxai_utterance = primer;
 
-        window.speechSynthesis.speak(silentUtterance);
+        // Set up handlers
+        primer.onstart = () => console.log('[VoiceManager] ✅ Primer started (audio unlocked!)');
+        primer.onend = () => {
+          console.log('[VoiceManager] ✅ Primer ended');
+          window.__voxai_utterance = null;
+        };
+        primer.onerror = (e) => console.log('[VoiceManager] Primer error (expected):', e.error);
 
-        // Wait a tiny bit then cancel
-        await new Promise(resolve => setTimeout(resolve, 100));
+        window.speechSynthesis.speak(primer);
+
+        // Wait for primer to complete
+        await new Promise(resolve => setTimeout(resolve, 200));
         window.speechSynthesis.cancel();
 
-        console.log('[VoiceManager] SpeechSynthesis primed');
+        console.log('[VoiceManager] ✅ SpeechSynthesis primed and ready');
       }
 
-      console.log('[VoiceManager] Audio engine initialized successfully');
+      console.log('[VoiceManager] 🎉 Audio engine initialized successfully!');
       return true;
     } catch (err) {
-      console.error('[VoiceManager] Audio init failed:', err);
+      console.error('[VoiceManager] ❌ Audio init failed:', err);
       return false;
     }
   }, [hasMounted]);
@@ -584,11 +614,11 @@ export function useVoiceManager(
         let resumeInterval: ReturnType<typeof setInterval> | null = null;
 
         utterance.onstart = () => {
-          console.log('[VoiceManager] Speech started');
+          console.log('[VoiceManager] 🔊 Speech started - TEXT:', text.substring(0, 30));
           // Chrome sometimes pauses randomly, keep resuming
           resumeInterval = setInterval(() => {
             if (window.speechSynthesis.paused) {
-              console.log('[VoiceManager] Resuming paused speech');
+              console.log('[VoiceManager] ⚠️ Resuming paused speech');
               window.speechSynthesis.resume();
             }
           }, 200);
@@ -599,7 +629,16 @@ export function useVoiceManager(
         // When speech ends, wait 300ms then restart recognition
         // ============================================================
         utterance.onend = () => {
-          console.log('[VoiceManager] Speech ended - starting re-activation loop');
+          console.log('[VoiceManager] 🔊 Speech ENDED - starting re-activation loop');
+          console.log('[VoiceManager] 📊 State check:', {
+            shouldContinue: shouldContinueRef.current,
+            autoListen: config.autoListen,
+            continuousMode: config.continuousMode,
+            nextSpeaker,
+            token,
+            currentToken: operationTokenRef.current,
+          });
+
           clearTimeout(timeout);
           if (resumeInterval) clearInterval(resumeInterval);
 
@@ -612,31 +651,44 @@ export function useVoiceManager(
           setIsDoubleTalk(false);
 
           // Wait for echo prevention, then explicitly restart recognition
+          console.log(`[VoiceManager] ⏳ Waiting ${ECHO_PREVENTION_DELAY_MS}ms for echo prevention...`);
+
           reactivationTimeoutRef.current = setTimeout(() => {
+            console.log('[VoiceManager] ⏳ Echo prevention delay complete');
+
             if (token !== operationTokenRef.current) {
-              console.log('[VoiceManager] Token mismatch, skipping reactivation');
+              console.log('[VoiceManager] ❌ Token mismatch, skipping reactivation');
               resolve();
               return;
             }
 
             unlockMicrophone();
+            console.log('[VoiceManager] ✅ Microphone unlocked');
 
             // ============================================================
             // RECURSIVE LOOP: Explicitly start listening again
             // ============================================================
             if (shouldContinueRef.current && config.autoListen && config.continuousMode) {
-              console.log(`[VoiceManager] Re-activating listener for Speaker ${nextSpeaker}`);
+              console.log(`[VoiceManager] 🎤 RE-ACTIVATING listener for Speaker ${nextSpeaker}`);
               setCurrentSpeaker(nextSpeaker);
               currentSpeakerRef.current = nextSpeaker;
 
               // Slight additional delay before starting recognition
               setTimeout(() => {
                 if (shouldContinueRef.current && !isMicLockedRef.current) {
+                  console.log(`[VoiceManager] 🎤 CALLING startListening(${nextSpeaker})`);
                   startListeningRef.current(nextSpeaker);
+                } else {
+                  console.log('[VoiceManager] ❌ Cannot start - shouldContinue:', shouldContinueRef.current, 'micLocked:', isMicLockedRef.current);
                 }
               }, 100);
             } else {
-              console.log('[VoiceManager] Auto-listen disabled, going idle');
+              console.log('[VoiceManager] ⏹️ Auto-listen disabled, going idle');
+              console.log('[VoiceManager] 📊 Why idle:', {
+                shouldContinue: shouldContinueRef.current,
+                autoListen: config.autoListen,
+                continuousMode: config.continuousMode,
+              });
               setState('idle');
               setIsActive(false);
             }
@@ -667,8 +719,17 @@ export function useVoiceManager(
           }
         };
 
-        console.log('[VoiceManager] Speaking:', text.substring(0, 50) + '...');
+        console.log('[VoiceManager] 🔊 Calling speechSynthesis.speak() with text:', text.substring(0, 50) + '...');
+        console.log('[VoiceManager] 🔊 Utterance lang:', utterance.lang, 'voice:', utterance.voice?.name || 'default');
+
+        // Actually speak
         window.speechSynthesis.speak(utterance);
+
+        // Debug: Check if speech queue is empty
+        setTimeout(() => {
+          console.log('[VoiceManager] 📊 Speech status after 500ms - speaking:', window.speechSynthesis.speaking, 'pending:', window.speechSynthesis.pending, 'paused:', window.speechSynthesis.paused);
+        }, 500);
+
       }, 100);
     });
   }, [
@@ -794,11 +855,15 @@ export function useVoiceManager(
 
       setState(speaker === 'A' ? 'speaking_b' : 'speaking_a');
 
+      console.log('[VoiceManager] 🔊 About to speak translation:', translatedText.substring(0, 50));
+      console.log('[VoiceManager] 🔊 Target language:', targetConfig.code, 'Next speaker:', nextSpeaker);
+
       // Speak and pass next speaker for recursive loop
       try {
         await speak(translatedText, targetConfig.code, nextSpeaker);
+        console.log('[VoiceManager] ✅ speak() completed successfully');
       } catch (speakErr) {
-        console.warn('[VoiceManager] Speech failed:', speakErr);
+        console.warn('[VoiceManager] ❌ Speech failed:', speakErr);
         // Even on speech error, try to continue the loop
         if (shouldContinueRef.current && config.autoListen && config.continuousMode) {
           unlockMicrophone();
@@ -845,15 +910,19 @@ export function useVoiceManager(
 
   // ========== START LISTENING WITH ERROR RECOVERY ==========
   const startListening = useCallback((speaker: Participant) => {
+    console.log(`[VoiceManager] 🎤 startListening(${speaker}) called`);
+
     if (!hasMounted || !browserSupport.speechRecognition) {
-      console.log('[VoiceManager] Cannot start listening - not supported');
+      console.log('[VoiceManager] ❌ Cannot start listening - not supported');
       return;
     }
 
     if (isMicLockedRef.current || isBotSpeakingRef.current) {
-      console.log('[VoiceManager] Cannot start listening - mic locked or bot speaking');
+      console.log('[VoiceManager] ❌ Cannot start listening - mic locked:', isMicLockedRef.current, 'bot speaking:', isBotSpeakingRef.current);
       return;
     }
+
+    console.log('[VoiceManager] ✅ Checks passed, starting recognition...');
 
     const SpeechRecognitionAPI = (window as any).SpeechRecognition ||
                                   (window as any).webkitSpeechRecognition;

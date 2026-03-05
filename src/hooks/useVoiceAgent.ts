@@ -1,16 +1,21 @@
 // 2026 Pro-Active Voice UX: Voice Agent with State Machine Pattern
-// REFACTORED: Surgical Lifecycle Repair - Mic Timer, TTS Autoplay, Loop Reset Protocol
-// Implements: Formal state transitions, sync engine integration, Smart-Silence capture
-// Version: 2.2.0 - Voice Lifecycle Stability Overhaul
+// REFACTORED: Surgical Lifecycle Repair - Fixed Infinite Cleanup Loop
+// Version: 2.3.0 - Root Cause Fix for Silent Bot & Dead Idle
+//
+// KEY FIXES:
+// 1. useRef for VoiceService - survives re-renders, no dependency array issues
+// 2. sessionActive guard - prevents cleanup during active session
+// 3. isCleaningUp guard - prevents recursive cleanup loops
+// 4. Proper audio unlock sequence on startSession
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { VoiceState, AppSettings, FailedMessage, InputMode } from '../types';
 import { voiceService, SpeechResult } from '../services/voice';
 import { useVoiceCapture, CaptureResult, CaptureState } from './useVoiceCapture';
-import { VoxError, mapErrorToVoxError, ERROR_REGISTRY } from '../types/errors';
+import { VoxError, mapErrorToVoxError } from '../types/errors';
 
 // ============================================================================
-// 2026 VOICE LIFECYCLE: State Machine Definition
+// STATE MACHINE DEFINITION
 // ============================================================================
 
 type StateAction =
@@ -23,7 +28,6 @@ type StateAction =
   | { type: 'ERROR'; payload: string }
   | { type: 'RESET' };
 
-// Valid state transitions
 const STATE_TRANSITIONS: Record<VoiceState, StateAction['type'][]> = {
   idle: ['START_LISTENING', 'START_SPEAKING', 'ERROR'],
   listening: ['STOP_LISTENING', 'START_PROCESSING', 'INTERRUPT', 'ERROR', 'RESET'],
@@ -32,14 +36,6 @@ const STATE_TRANSITIONS: Record<VoiceState, StateAction['type'][]> = {
   error: ['RESET', 'START_LISTENING'],
 };
 
-// ============================================================================
-// 2026 MIC TIMER: High-Resolution Duration Tracking
-// ============================================================================
-// Format: MM:SS (e.g., 00:05, 01:23)
-// Updates every 1000ms while listening
-// Resets to 00:00 on stop or cleanup
-// ============================================================================
-
 function formatMicDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
@@ -47,11 +43,7 @@ function formatMicDuration(seconds: number): string {
 }
 
 // ============================================================================
-// 2026 TTS LIFECYCLE: Web Speech API Initialization
-// ============================================================================
-// Pre-initialize voices on module load
-// AudioContext resume on user gesture
-// Utterance event binding for state control
+// TTS VOICE INITIALIZATION (Module-level singleton)
 // ============================================================================
 
 let ttsVoicesInitialized = false;
@@ -66,23 +58,18 @@ function initializeTTSVoices(): void {
   const loadVoices = () => {
     const voices = synth.getVoices();
     if (voices.length > 0) {
-      // Prefer English voices
       ttsPreferredVoice = voices.find(v => v.lang.startsWith('en') && v.localService)
         || voices.find(v => v.lang.startsWith('en'))
         || voices[0];
       ttsVoicesInitialized = true;
-      console.log('[VoiceAgent] TTS voices initialized:', voices.length, 'voices available');
+      console.log('[VoiceAgent] TTS voices loaded:', voices.length);
     }
   };
 
-  // Load immediately if available
   loadVoices();
-
-  // Also listen for voiceschanged event (Chrome loads voices async)
   synth.addEventListener('voiceschanged', loadVoices, { once: true });
 }
 
-// Initialize on module load
 if (typeof window !== 'undefined') {
   initializeTTSVoices();
 }
@@ -91,35 +78,28 @@ if (typeof window !== 'undefined') {
 function voiceStateMachine(state: VoiceState, action: StateAction): VoiceState {
   const validTransitions = STATE_TRANSITIONS[state];
 
-  // Guard: Check if transition is valid
   if (!validTransitions.includes(action.type)) {
     console.warn(`[VoiceStateMachine] Invalid transition: ${state} -> ${action.type}`);
     return state;
   }
 
   switch (action.type) {
-    case 'START_LISTENING':
-      return 'listening';
-    case 'STOP_LISTENING':
-      return 'processing';
-    case 'START_PROCESSING':
-      return 'processing';
-    case 'START_SPEAKING':
-      return 'speaking';
-    case 'FINISH_SPEAKING':
-      return 'idle';
-    case 'INTERRUPT':
-      return 'idle';
-    case 'ERROR':
-      return 'error';
-    case 'RESET':
-      return 'idle';
-    default:
-      return state;
+    case 'START_LISTENING': return 'listening';
+    case 'STOP_LISTENING': return 'processing';
+    case 'START_PROCESSING': return 'processing';
+    case 'START_SPEAKING': return 'speaking';
+    case 'FINISH_SPEAKING': return 'idle';
+    case 'INTERRUPT': return 'idle';
+    case 'ERROR': return 'error';
+    case 'RESET': return 'idle';
+    default: return state;
   }
 }
 
-// === INTERFACES ===
+// ============================================================================
+// INTERFACES
+// ============================================================================
+
 interface VoiceAgentProps {
   settings: AppSettings;
   onTranscript: (text: string, isFinal: boolean, confidence: number) => void;
@@ -132,7 +112,7 @@ interface VoiceAgentReturn {
   state: VoiceState;
   inputMode: InputMode;
   error: string | null;
-  voxError: VoxError | null; // 2026 Premium: Detailed error object
+  voxError: VoxError | null;
   partialTranscript: string;
   vadProgress: number;
   currentSpokenWordIndex: number;
@@ -141,17 +121,15 @@ interface VoiceAgentReturn {
   wordsBuffer: string[];
   isLowConfidence: boolean;
   isSpeaking: boolean;
-  // 2026: Smart-Silence capture props
   silenceProgress: number;
   isSilenceCountdown: boolean;
   captureState: CaptureState;
   fullTranscript: string;
   interimTranscript: string;
-  // 2026 VOICE LIFECYCLE: New mic timer and audio state props
-  micDuration: string;         // Formatted MM:SS duration
-  micDurationSeconds: number;  // Raw seconds for progress calculations
-  isAudioReady: boolean;       // True if TTS audio is initialized
-  isTTSSpeaking: boolean;      // True if Web Speech TTS is actively playing
+  micDuration: string;
+  micDurationSeconds: number;
+  isAudioReady: boolean;
+  isTTSSpeaking: boolean;
   startListening: () => void;
   stopListening: () => void;
   speak: (text: string) => Promise<void>;
@@ -161,11 +139,13 @@ interface VoiceAgentReturn {
   retryFailed: () => void;
   clearFailedMessage: () => void;
   dispatch: (action: StateAction) => void;
-  // 2026 VOICE LIFECYCLE: Audio wake-up for autoplay policy
   wakeUpAudio: () => Promise<boolean>;
 }
 
-// === HOOK ===
+// ============================================================================
+// MAIN HOOK
+// ============================================================================
+
 export const useVoiceAgent = ({
   settings,
   onTranscript,
@@ -173,7 +153,7 @@ export const useVoiceAgent = ({
   onResponseComplete,
   onSyncWordChange,
 }: VoiceAgentProps): VoiceAgentReturn => {
-  // === STATE MACHINE STATE ===
+  // === STATE ===
   const [state, setStateRaw] = useState<VoiceState>('idle');
   const [inputMode, setInputMode] = useState<InputMode>('idle');
   const [error, setErrorRaw] = useState<string | null>(null);
@@ -181,37 +161,43 @@ export const useVoiceAgent = ({
   const [partialTranscript, setPartialTranscript] = useState('');
   const [vadProgress, setVadProgress] = useState(0);
   const [currentSpokenWordIndex, setCurrentSpokenWordIndex] = useState(-1);
-
-  // 2026: Enhanced state
   const [transcriptConfidence, setTranscriptConfidence] = useState(1);
   const [failedMessage, setFailedMessage] = useState<FailedMessage | null>(null);
   const [wordsBuffer, setWordsBuffer] = useState<string[]>([]);
-
-  // ============================================================================
-  // 2026 MIC TIMER: Real-time duration tracking state
-  // ============================================================================
   const [micDurationSeconds, setMicDurationSeconds] = useState(0);
-  const micTimerRef = useRef<number | null>(null);
-  const micStartTimeRef = useRef<number>(0);
-
-  // ============================================================================
-  // 2026 TTS STATE: Web Speech API tracking
-  // ============================================================================
   const [isAudioReady, setIsAudioReady] = useState(false);
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false);
-  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const ttsCompletionCallbackRef = useRef<(() => void) | null>(null);
 
-  // === 2026: SMART-SILENCE VOICE CAPTURE ===
+  // ============================================================================
+  // CRITICAL FIX: useRef for lifecycle guards
+  // These prevent the infinite cleanup loop and premature state resets
+  // ============================================================================
+  const sessionActiveRef = useRef(false);       // True when session is running
+  const isCleaningUpRef = useRef(false);        // Prevents recursive cleanup
+  const isMountedRef = useRef(true);            // Track component mount state
+  const stateRef = useRef<VoiceState>('idle');
+  const transcriptRef = useRef('');
+  const vadIntervalRef = useRef<number | null>(null);
+  const micTimerRef = useRef<number | null>(null);
+  const micStartTimeRef = useRef<number>(0);
+  const speakingRef = useRef(false);
+  const interruptedRef = useRef(false);
+  const failedMessageRef = useRef<FailedMessage | null>(null);
+  const settingsRef = useRef(settings);
+  const onSyncWordChangeRef = useRef(onSyncWordChange);
+  const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // === SMART-SILENCE VOICE CAPTURE ===
   const voiceCapture = useVoiceCapture({
     onInterimUpdate: (text) => {
+      if (!isMountedRef.current) return;
       setPartialTranscript(text);
       onTranscript(text, false, voiceCapture.confidence);
     },
     onFinalSubmit: (result: CaptureResult) => {
-      // ============================================================================
-      // 2026 MIC TIMER: Stop timer when transcript is submitted
-      // ============================================================================
+      if (!isMountedRef.current) return;
+
+      // Stop mic timer
       if (micTimerRef.current) {
         window.clearInterval(micTimerRef.current);
         micTimerRef.current = null;
@@ -224,14 +210,14 @@ export const useVoiceAgent = ({
       onResponseComplete(result.transcript);
     },
     onError: (err, voxErr) => {
-      // Stop mic timer on error
+      if (!isMountedRef.current) return;
+
       if (micTimerRef.current) {
         window.clearInterval(micTimerRef.current);
         micTimerRef.current = null;
       }
       setMicDurationSeconds(0);
 
-      // Set VoxError for premium error display
       if (voxErr) {
         setVoxError(voxErr);
       } else {
@@ -241,50 +227,35 @@ export const useVoiceAgent = ({
       dispatch({ type: 'ERROR', payload: err });
     },
     onStateChange: (captureState) => {
-      // Sync capture state to voice state
+      if (!isMountedRef.current) return;
+
       if (captureState === 'IDLE' && stateRef.current === 'listening') {
-        // ============================================================================
-        // 2026 MIC TIMER: Reset timer when returning to IDLE
-        // ============================================================================
         if (micTimerRef.current) {
           window.clearInterval(micTimerRef.current);
           micTimerRef.current = null;
         }
         setMicDurationSeconds(0);
-
         dispatch({ type: 'RESET' });
       } else if (captureState === 'LISTENING' || captureState === 'CAPTURING' || captureState === 'STABLE_SILENCE') {
         if (stateRef.current === 'idle' || stateRef.current === 'error') {
           dispatch({ type: 'START_LISTENING' });
         }
       } else if (captureState === 'SUBMITTING') {
-        // Stop timer when processing starts
         if (micTimerRef.current) {
           window.clearInterval(micTimerRef.current);
           micTimerRef.current = null;
         }
-        // Keep the last duration displayed briefly, then reset
-        setTimeout(() => setMicDurationSeconds(0), 500);
-
+        setTimeout(() => {
+          if (isMountedRef.current) setMicDurationSeconds(0);
+        }, 500);
         dispatch({ type: 'START_PROCESSING' });
       }
     },
   });
 
-  // === REFS (avoid stale closures) ===
-  const stateRef = useRef<VoiceState>('idle');
-  const transcriptRef = useRef('');
-  const vadIntervalRef = useRef<number | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const speakingRef = useRef(false);
-  const interruptedRef = useRef(false);
-  const failedMessageRef = useRef<FailedMessage | null>(null);
-  const settingsRef = useRef(settings);
-  const onSyncWordChangeRef = useRef(onSyncWordChange);
-
   // === PREMIUM ERROR HANDLER ===
-  // Wrapper that sets both string error and VoxError for premium display
   const setError = useCallback((err: string | null, voxErr?: VoxError) => {
+    if (!isMountedRef.current) return;
     setErrorRaw(err);
     if (err === null) {
       setVoxError(null);
@@ -297,16 +268,16 @@ export const useVoiceAgent = ({
 
   // === STATE MACHINE DISPATCH ===
   const dispatch = useCallback((action: StateAction) => {
+    if (!isMountedRef.current) return;
+
     setStateRaw(prev => {
       const nextState = voiceStateMachine(prev, action);
       stateRef.current = nextState;
       return nextState;
     });
 
-    // Handle side effects based on action type
     if (action.type === 'ERROR' && 'payload' in action) {
       setErrorRaw(action.payload);
-      // VoxError should already be set by the caller
     }
     if (action.type === 'RESET') {
       setErrorRaw(null);
@@ -316,21 +287,10 @@ export const useVoiceAgent = ({
   }, []);
 
   // Keep refs in sync
-  useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  useEffect(() => {
-    failedMessageRef.current = failedMessage;
-  }, [failedMessage]);
-
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
-
-  useEffect(() => {
-    onSyncWordChangeRef.current = onSyncWordChange;
-  }, [onSyncWordChange]);
+  useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => { failedMessageRef.current = failedMessage; }, [failedMessage]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { onSyncWordChangeRef.current = onSyncWordChange; }, [onSyncWordChange]);
 
   // === DERIVED STATE ===
   const LOW_CONFIDENCE_THRESHOLD = 0.7;
@@ -339,26 +299,22 @@ export const useVoiceAgent = ({
   const micDuration = useMemo(() => formatMicDuration(micDurationSeconds), [micDurationSeconds]);
 
   // ============================================================================
-  // 2026 MIC TIMER: Start/Stop/Reset functions
+  // MIC TIMER FUNCTIONS
   // ============================================================================
 
   const startMicTimer = useCallback(() => {
-    // Clear any existing timer
     if (micTimerRef.current) {
       window.clearInterval(micTimerRef.current);
     }
-
-    // Record start time with high precision
     micStartTimeRef.current = performance.now();
     setMicDurationSeconds(0);
 
-    // Update every 1000ms
     micTimerRef.current = window.setInterval(() => {
-      const elapsed = Math.floor((performance.now() - micStartTimeRef.current) / 1000);
-      setMicDurationSeconds(elapsed);
+      if (isMountedRef.current) {
+        const elapsed = Math.floor((performance.now() - micStartTimeRef.current) / 1000);
+        setMicDurationSeconds(elapsed);
+      }
     }, 1000);
-
-    console.log('[VoiceAgent] Mic timer started');
   }, []);
 
   const stopMicTimer = useCallback(() => {
@@ -366,137 +322,165 @@ export const useVoiceAgent = ({
       window.clearInterval(micTimerRef.current);
       micTimerRef.current = null;
     }
-    // Reset to 00:00
-    setMicDurationSeconds(0);
+    if (isMountedRef.current) {
+      setMicDurationSeconds(0);
+    }
     micStartTimeRef.current = 0;
-    console.log('[VoiceAgent] Mic timer stopped and reset');
   }, []);
 
   // ============================================================================
-  // 2026 TTS LIFECYCLE: Audio Wake-Up Protocol
-  // ============================================================================
-  // Must be called from a user gesture to satisfy browser autoplay policies
-  // Resumes AudioContext and initializes speechSynthesis
+  // AUDIO WAKE-UP PROTOCOL (Must be called from user gesture)
   // ============================================================================
 
   const wakeUpAudio = useCallback(async (): Promise<boolean> => {
+    console.log('[VoiceAgent] 🔊 Starting audio wake-up sequence...');
+
     try {
       // 1. Initialize voice service AudioContext
       const voiceServiceReady = await voiceService.initializeAudio();
+      console.log('[VoiceAgent] ✅ VoiceService audio initialized:', voiceServiceReady);
 
-      // 2. Wake up speechSynthesis (required for some browsers)
+      // 2. Wake up speechSynthesis
       if (typeof window !== 'undefined' && window.speechSynthesis) {
-        // Cancel any pending speech
         window.speechSynthesis.cancel();
 
-        // Force voices to load
         if (!ttsVoicesInitialized) {
           initializeTTSVoices();
+          // Wait for voices to load
+          await new Promise<void>(resolve => {
+            const check = () => {
+              if (ttsVoicesInitialized || window.speechSynthesis.getVoices().length > 0) {
+                resolve();
+              } else {
+                setTimeout(check, 100);
+              }
+            };
+            check();
+            setTimeout(resolve, 2000); // Timeout after 2s
+          });
         }
 
-        // Create a silent utterance to "prime" the synthesis engine
-        const silentUtterance = new SpeechSynthesisUtterance('');
-        silentUtterance.volume = 0;
-        window.speechSynthesis.speak(silentUtterance);
+        // Speak a silent primer to unlock TTS
+        const primer = new SpeechSynthesisUtterance(' ');
+        primer.volume = 0.01;
+        primer.rate = 10;
+
+        // Store globally to prevent GC
+        (window as any).__voiceAgentPrimer = primer;
+
+        primer.onend = () => {
+          console.log('[VoiceAgent] ✅ TTS primer completed');
+          (window as any).__voiceAgentPrimer = null;
+        };
+
+        window.speechSynthesis.speak(primer);
+
+        // Wait a moment then cancel
+        await new Promise(resolve => setTimeout(resolve, 100));
+        window.speechSynthesis.cancel();
       }
 
-      setIsAudioReady(true);
-      console.log('[VoiceAgent] Audio wake-up complete');
-      return voiceServiceReady;
+      // 3. Mark session as active
+      sessionActiveRef.current = true;
+
+      if (isMountedRef.current) {
+        setIsAudioReady(true);
+      }
+
+      console.log('[VoiceAgent] 🎉 Audio wake-up complete!');
+      return true;
     } catch (err) {
-      console.error('[VoiceAgent] Audio wake-up failed:', err);
-      setIsAudioReady(false);
+      console.error('[VoiceAgent] ❌ Audio wake-up failed:', err);
+      if (isMountedRef.current) {
+        setIsAudioReady(false);
+      }
       return false;
     }
   }, []);
 
   // ============================================================================
-  // 2026 TTS LIFECYCLE: Strict Cleanup - Cancel All Speech
+  // CANCEL ALL TTS
   // ============================================================================
 
   const cancelAllTTS = useCallback(() => {
-    // Cancel Web Speech API
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
-
-    // Clear active utterance reference
     activeUtteranceRef.current = null;
-    setIsTTSSpeaking(false);
-
-    // Clear completion callback
-    ttsCompletionCallbackRef.current = null;
-
-    console.log('[VoiceAgent] All TTS cancelled');
+    if (isMountedRef.current) {
+      setIsTTSSpeaking(false);
+    }
   }, []);
 
-  // === CLEANUP (Extended with timer and TTS cleanup) ===
+  // ============================================================================
+  // CLEANUP (Guarded to prevent recursive loops)
+  // ============================================================================
+
   const cleanup = useCallback(() => {
-    // Stop voice service
-    voiceService.cleanup();
-
-    // Stop mic timer
-    stopMicTimer();
-
-    // Cancel all TTS
-    cancelAllTTS();
-
-    // Clear VAD interval
-    if (vadIntervalRef.current) {
-      window.clearInterval(vadIntervalRef.current);
-      vadIntervalRef.current = null;
+    // CRITICAL: Guard against recursive cleanup
+    if (isCleaningUpRef.current) {
+      console.log('[VoiceAgent] ⚠️ Cleanup already in progress, skipping');
+      return;
     }
 
-    // Reset all state
-    setInputMode('idle');
-    setVadProgress(0);
-    setPartialTranscript('');
-    setCurrentSpokenWordIndex(-1);
-    setWordsBuffer([]);
-    speakingRef.current = false;
-    interruptedRef.current = false;
-    transcriptRef.current = '';
+    // CRITICAL: Don't cleanup during active speaking unless interrupted
+    if (stateRef.current === 'speaking' && !interruptedRef.current) {
+      console.log('[VoiceAgent] ⚠️ Skipping cleanup - currently speaking');
+      return;
+    }
+
+    isCleaningUpRef.current = true;
+    console.log('[VoiceAgent] 🧹 Cleanup starting...');
+
+    try {
+      voiceService.cleanup();
+      stopMicTimer();
+      cancelAllTTS();
+
+      if (vadIntervalRef.current) {
+        window.clearInterval(vadIntervalRef.current);
+        vadIntervalRef.current = null;
+      }
+
+      if (isMountedRef.current) {
+        setInputMode('idle');
+        setVadProgress(0);
+        setPartialTranscript('');
+        setCurrentSpokenWordIndex(-1);
+        setWordsBuffer([]);
+      }
+
+      speakingRef.current = false;
+      interruptedRef.current = false;
+      transcriptRef.current = '';
+    } finally {
+      isCleaningUpRef.current = false;
+      console.log('[VoiceAgent] ✅ Cleanup complete');
+    }
   }, [stopMicTimer, cancelAllTTS]);
 
-  // === INTERRUPT (Barge-in with full TTS cancellation) ===
+  // ============================================================================
+  // INTERRUPT (Barge-in)
+  // ============================================================================
+
   const interrupt = useCallback(() => {
-    console.log('[VoiceAgent] Interrupt triggered - cancelling all audio');
+    console.log('[VoiceAgent] 🛑 Interrupt triggered');
     interruptedRef.current = true;
 
-    // Stop voice service TTS
     voiceService.stopSpeaking();
-
-    // Cancel Web Speech API TTS
     cancelAllTTS();
-
-    // Stop mic timer
     stopMicTimer();
-
-    // Full cleanup
     cleanup();
-
     dispatch({ type: 'INTERRUPT' });
   }, [cleanup, dispatch, cancelAllTTS, stopMicTimer]);
 
-  // === VOICE SERVICE CALLBACKS ===
-  const onResultCallback = useCallback((result: SpeechResult) => {
-    transcriptRef.current = result.transcript;
-    setPartialTranscript(result.transcript);
-    setTranscriptConfidence(result.confidence);
-    onTranscript(result.transcript, result.isFinal, result.confidence);
-    startTimeRef.current = Date.now();
-    setVadProgress(0);
-  }, [onTranscript]);
-
-  const onEndCallback = useCallback(() => {
-    // Recognition ended naturally
-  }, []);
-
   // ============================================================================
-  // 2026 ERROR RESILIENCE: Permission Guard with clear error states
+  // VOICE SERVICE CALLBACKS
   // ============================================================================
+
   const onErrorCallback = useCallback((err: Error) => {
-    // Stop mic timer on error
+    if (!isMountedRef.current) return;
+
     stopMicTimer();
 
     if (vadIntervalRef.current) {
@@ -514,86 +498,59 @@ export const useVoiceAgent = ({
     };
 
     const errorMessage = errorMessages[err.message] || err.message;
-
-    // ============================================================================
-    // PERMISSION GUARD: Log clear warning and transition to ERROR state
-    // ============================================================================
-    if (err.message === 'MIC_PERMISSION_DENIED' || err.message === 'not-allowed') {
-      console.warn(
-        '[VoiceAgent] PERMISSION DENIED: Microphone access was denied by the user.\n' +
-        'The SuperButton will display ERROR state with red glow.\n' +
-        'User action required: Grant microphone permission in browser settings.'
-      );
-    }
-
     dispatch({ type: 'ERROR', payload: errorMessage });
     setInputMode('idle');
   }, [dispatch, stopMicTimer]);
 
-  const onSilenceCallback = useCallback(() => {
-    if (vadIntervalRef.current) {
-      window.clearInterval(vadIntervalRef.current);
-      vadIntervalRef.current = null;
-    }
+  // ============================================================================
+  // START LISTENING
+  // ============================================================================
 
-    if (transcriptRef.current.trim()) {
-      dispatch({ type: 'START_PROCESSING' });
-      setInputMode('idle');
-      voiceService.stopListening();
-      const confidence = voiceService.getLastConfidence();
-      onTranscript(transcriptRef.current, true, confidence);
-      onResponseComplete(transcriptRef.current);
-    } else {
-      cleanup();
-      dispatch({ type: 'RESET' });
-    }
-  }, [onTranscript, onResponseComplete, cleanup, dispatch]);
-
-  // === START LISTENING (Using Smart-Silence Capture) ===
   const startListening = useCallback(() => {
     const currentState = stateRef.current;
+    console.log('[VoiceAgent] 🎤 startListening called, current state:', currentState);
 
     // Barge-in: interrupt if speaking
     if (currentState === 'speaking') {
       voiceService.stopSpeaking();
-      cancelAllTTS(); // 2026: Also cancel Web Speech TTS
+      cancelAllTTS();
       speakingRef.current = false;
       interruptedRef.current = true;
       dispatch({ type: 'INTERRUPT' });
     }
 
     // Only start from valid states
-    if (currentState !== 'idle' && currentState !== 'error') return;
+    if (currentState !== 'idle' && currentState !== 'error') {
+      console.log('[VoiceAgent] ⚠️ Cannot start listening from state:', currentState);
+      return;
+    }
 
     setError(null);
     transcriptRef.current = '';
     setPartialTranscript('');
     setVadProgress(0);
     setTranscriptConfidence(1);
-    startTimeRef.current = Date.now();
     setInputMode('voice');
 
-    // ============================================================================
-    // 2026 MIC TIMER: Start high-resolution timer the microsecond recognition starts
-    // ============================================================================
+    // Mark session as active
+    sessionActiveRef.current = true;
+
     startMicTimer();
-
-    // 2026: Use Smart-Silence capture engine
     voiceCapture.startCapture();
-
     dispatch({ type: 'START_LISTENING' });
-  }, [dispatch, voiceCapture, startMicTimer, cancelAllTTS]);
 
-  // === STOP LISTENING (Manual stop with Smart-Silence) ===
+    console.log('[VoiceAgent] ✅ Listening started');
+  }, [dispatch, voiceCapture, startMicTimer, cancelAllTTS, setError]);
+
+  // ============================================================================
+  // STOP LISTENING
+  // ============================================================================
+
   const stopListening = useCallback(() => {
     if (stateRef.current !== 'listening') return;
 
-    // ============================================================================
-    // 2026 MIC TIMER: Stop and reset timer on manual stop
-    // ============================================================================
+    console.log('[VoiceAgent] ⏹️ stopListening called');
     stopMicTimer();
-
-    // 2026: Stop capture (will submit if valid transcript exists)
     voiceCapture.stopCapture();
 
     if (vadIntervalRef.current) {
@@ -605,191 +562,158 @@ export const useVoiceAgent = ({
   }, [voiceCapture, stopMicTimer]);
 
   // ============================================================================
-  // 2026 SPEAK: TTS with Loop Reset Protocol
-  // ============================================================================
-  // - Uses utterance.onstart for 'Speaking' state
-  // - Uses utterance.onend for final reset to 'idle'
-  // - Ensures mic is ready again after response
-  // - Falls back to Web Speech API if primary TTS fails
+  // SPEAK (TTS with proper lifecycle)
   // ============================================================================
 
-  const speak = useCallback(
-    async (text: string) => {
-      // Guard: Can only speak from idle or processing
-      if (stateRef.current !== 'idle' && stateRef.current !== 'processing') {
-        console.warn('[VoiceAgent] Cannot speak from state:', stateRef.current);
-        return;
-      }
+  const speak = useCallback(async (text: string) => {
+    if (stateRef.current !== 'idle' && stateRef.current !== 'processing') {
+      console.warn('[VoiceAgent] Cannot speak from state:', stateRef.current);
+      return;
+    }
 
-      dispatch({ type: 'START_SPEAKING' });
-      setCurrentSpokenWordIndex(0);
-      speakingRef.current = true;
-      interruptedRef.current = false;
+    console.log('[VoiceAgent] 🔊 speak() called with text:', text.substring(0, 50));
 
-      // ============================================================================
-      // 2026 MIC TIMER: Ensure timer is stopped when speaking starts
-      // ============================================================================
-      stopMicTimer();
+    dispatch({ type: 'START_SPEAKING' });
+    setCurrentSpokenWordIndex(0);
+    speakingRef.current = true;
+    interruptedRef.current = false;
+    stopMicTimer();
 
+    try {
+      const words = text.split(/\s+/).filter(w => w.length > 0);
+      setWordsBuffer(words);
+
+      const currentSettings = settingsRef.current;
+
+      // Try primary TTS service
       try {
-        // Setup word buffer for sync
-        const words = text.split(/\s+/).filter(w => w.length > 0);
-        setWordsBuffer(words);
+        console.log('[VoiceAgent] Trying primary TTS...');
 
-        const currentSettings = settingsRef.current;
+        const speakPromise = voiceService.speak(
+          text,
+          currentSettings.voiceName,
+          currentSettings.whisperMode
+        );
 
-        // Try primary TTS service first
-        let usedFallback = false;
-        try {
-          // Start TTS
-          const speakPromise = voiceService.speak(
-            text,
-            currentSettings.voiceName,
-            currentSettings.whisperMode
-          );
+        const baseDuration = 350;
+        const wordDuration = baseDuration / (currentSettings.speechRate || 1);
 
-          // Word sync loop - estimate word duration from speech rate
-          const baseDuration = 350; // ms per word at normal speed
-          const wordDuration = baseDuration / (currentSettings.speechRate || 1);
+        for (let i = 0; i < words.length; i++) {
+          if (interruptedRef.current || !speakingRef.current) break;
+          setCurrentSpokenWordIndex(i);
+          onSyncWordChangeRef.current?.(i, words[i]);
+          await new Promise(resolve => setTimeout(resolve, wordDuration));
+        }
 
-          // Sync word highlighting with estimated TTS timing
-          for (let i = 0; i < words.length; i++) {
-            if (interruptedRef.current || !speakingRef.current) break;
+        await speakPromise;
+        console.log('[VoiceAgent] ✅ Primary TTS completed');
 
-            setCurrentSpokenWordIndex(i);
-            onSyncWordChangeRef.current?.(i, words[i]);
+      } catch (primaryErr) {
+        console.warn('[VoiceAgent] Primary TTS failed, using Web Speech fallback:', primaryErr);
 
-            await new Promise(resolve => setTimeout(resolve, wordDuration));
+        // Fallback to Web Speech API
+        await new Promise<void>((resolve, reject) => {
+          if (typeof window === 'undefined' || !window.speechSynthesis) {
+            reject(new Error('Web Speech API not supported'));
+            return;
           }
 
-          // Wait for TTS to complete
-          await speakPromise;
-        } catch (primaryErr) {
-          console.warn('[VoiceAgent] Primary TTS failed, trying Web Speech fallback:', primaryErr);
-          usedFallback = true;
+          const synth = window.speechSynthesis;
+          synth.cancel();
 
-          // ============================================================================
-          // 2026 FALLBACK: Web Speech API with proper lifecycle binding
-          // ============================================================================
-          await new Promise<void>((resolve, reject) => {
-            if (typeof window === 'undefined' || !window.speechSynthesis) {
-              reject(new Error('Web Speech API not supported'));
-              return;
-            }
+          const utterance = new SpeechSynthesisUtterance(text);
 
-            const synth = window.speechSynthesis;
+          // Store globally to prevent GC
+          activeUtteranceRef.current = utterance;
+          (window as any).__voiceAgentUtterance = utterance;
 
-            // Cancel any existing speech
-            synth.cancel();
+          if (ttsPreferredVoice) {
+            utterance.voice = ttsPreferredVoice;
+          }
+          utterance.rate = currentSettings.speechRate || 1;
+          utterance.volume = currentSettings.whisperMode ? 0.4 : 1;
 
-            const utterance = new SpeechSynthesisUtterance(text);
-            activeUtteranceRef.current = utterance;
+          utterance.onstart = () => {
+            console.log('[VoiceAgent] 🔊 Web Speech TTS started');
+            if (isMountedRef.current) setIsTTSSpeaking(true);
+          };
 
-            // Apply voice settings
-            if (ttsPreferredVoice) {
-              utterance.voice = ttsPreferredVoice;
-            }
-            utterance.rate = currentSettings.speechRate || 1;
-            utterance.volume = currentSettings.whisperMode ? 0.4 : 1;
+          utterance.onend = () => {
+            console.log('[VoiceAgent] ✅ Web Speech TTS ended');
+            if (isMountedRef.current) setIsTTSSpeaking(false);
+            activeUtteranceRef.current = null;
+            (window as any).__voiceAgentUtterance = null;
+            resolve();
+          };
 
-            // ============================================================================
-            // CRITICAL: utterance.onstart - Set state to 'Speaking'
-            // ============================================================================
-            utterance.onstart = () => {
-              console.log('[VoiceAgent] Web Speech TTS started');
-              setIsTTSSpeaking(true);
-              // State already set to 'speaking' above
-            };
+          utterance.onerror = (event) => {
+            console.error('[VoiceAgent] Web Speech TTS error:', event.error);
+            if (isMountedRef.current) setIsTTSSpeaking(false);
+            activeUtteranceRef.current = null;
+            (window as any).__voiceAgentUtterance = null;
 
-            // ============================================================================
-            // CRITICAL: utterance.onend - Trigger final reset (Loop Reset Protocol)
-            // ============================================================================
-            utterance.onend = () => {
-              console.log('[VoiceAgent] Web Speech TTS ended');
-              setIsTTSSpeaking(false);
-              activeUtteranceRef.current = null;
+            if (event.error === 'interrupted') {
               resolve();
-            };
+            } else {
+              reject(new Error(`TTS Error: ${event.error}`));
+            }
+          };
 
-            utterance.onerror = (event) => {
-              console.error('[VoiceAgent] Web Speech TTS error:', event.error);
-              setIsTTSSpeaking(false);
-              activeUtteranceRef.current = null;
+          utterance.onboundary = (event) => {
+            if (event.name === 'word' && !interruptedRef.current && isMountedRef.current) {
+              const wordIndex = Math.min(
+                Math.floor(event.charIndex / (text.length / words.length)),
+                words.length - 1
+              );
+              setCurrentSpokenWordIndex(wordIndex);
+              onSyncWordChangeRef.current?.(wordIndex, words[wordIndex] || '');
+            }
+          };
 
-              // Don't reject for 'interrupted' errors (intentional barge-in)
-              if (event.error === 'interrupted') {
-                resolve();
-              } else {
-                reject(new Error(`TTS Error: ${event.error}`));
-              }
-            };
+          synth.speak(utterance);
+        });
+      }
 
-            // Word boundary events for sync (if supported)
-            utterance.onboundary = (event) => {
-              if (event.name === 'word' && !interruptedRef.current) {
-                const wordIndex = Math.min(
-                  Math.floor(event.charIndex / (text.length / words.length)),
-                  words.length - 1
-                );
-                setCurrentSpokenWordIndex(wordIndex);
-                onSyncWordChangeRef.current?.(wordIndex, words[wordIndex] || '');
-              }
-            };
+      // Clean finish
+      if (speakingRef.current && !interruptedRef.current && isMountedRef.current) {
+        console.log('[VoiceAgent] ✅ Speech complete - transitioning to IDLE');
+        dispatch({ type: 'FINISH_SPEAKING' });
+        setInputMode('idle');
+        voiceService.stopListening();
+      }
 
-            // Speak the utterance
-            synth.speak(utterance);
-          });
-        }
-
-        // ============================================================================
-        // LOOP RESET PROTOCOL: Clean finish only if not interrupted
-        // ============================================================================
-        if (speakingRef.current && !interruptedRef.current) {
-          console.log('[VoiceAgent] Speech complete - transitioning to IDLE');
-
-          // Explicitly reset to idle state
-          dispatch({ type: 'FINISH_SPEAKING' });
-          setInputMode('idle');
-
-          // ============================================================================
-          // CRITICAL: Ensure previous SpeechRecognition is fully aborted
-          // ============================================================================
-          // The voiceCapture hook handles its own cleanup, but we ensure
-          // the voice service recognition is also cleaned up
-          voiceService.stopListening();
-        }
-
-        // Reset word tracking
+      if (isMountedRef.current) {
         setCurrentSpokenWordIndex(-1);
         setWordsBuffer([]);
-        speakingRef.current = false;
-        setIsTTSSpeaking(false);
-
-      } catch (err: unknown) {
-        speakingRef.current = false;
-        setIsTTSSpeaking(false);
-
-        if (!interruptedRef.current) {
-          // Save for retry
-          const currentFailed = failedMessageRef.current;
-          setFailedMessage({
-            text,
-            retryCount: (currentFailed?.retryCount || 0) + 1,
-            timestamp: Date.now(),
-          });
-
-          dispatch({
-            type: 'ERROR',
-            payload: err instanceof Error ? err.message : 'Playback failed'
-          });
-          setInputMode('idle');
-        }
       }
-    },
-    [dispatch, stopMicTimer]
-  );
+      speakingRef.current = false;
+      if (isMountedRef.current) setIsTTSSpeaking(false);
 
-  // === RETRY FAILED ===
+    } catch (err: unknown) {
+      speakingRef.current = false;
+      if (isMountedRef.current) setIsTTSSpeaking(false);
+
+      if (!interruptedRef.current && isMountedRef.current) {
+        const currentFailed = failedMessageRef.current;
+        setFailedMessage({
+          text,
+          retryCount: (currentFailed?.retryCount || 0) + 1,
+          timestamp: Date.now(),
+        });
+
+        dispatch({
+          type: 'ERROR',
+          payload: err instanceof Error ? err.message : 'Playback failed'
+        });
+        setInputMode('idle');
+      }
+    }
+  }, [dispatch, stopMicTimer]);
+
+  // ============================================================================
+  // RETRY & CLEAR FAILED
+  // ============================================================================
+
   const retryFailed = useCallback(() => {
     const failed = failedMessageRef.current;
     if (!failed) return;
@@ -798,74 +722,75 @@ export const useVoiceAgent = ({
     setError(null);
     dispatch({ type: 'RESET' });
     speak(failed.text);
-  }, [speak, dispatch]);
+  }, [speak, dispatch, setError]);
 
-  // === CLEAR FAILED ===
   const clearFailedMessage = useCallback(() => {
     setFailedMessage(null);
     setError(null);
     if (stateRef.current === 'error') {
       dispatch({ type: 'RESET' });
     }
-  }, [dispatch]);
+  }, [dispatch, setError]);
 
   // ============================================================================
-  // 2026 LIFECYCLE: Visibility, Focus, and Global Cleanup
+  // LIFECYCLE: SINGLE useEffect for cleanup on UNMOUNT ONLY
+  // No dependencies that could trigger re-runs!
   // ============================================================================
 
   useEffect(() => {
+    isMountedRef.current = true;
+    console.log('[VoiceAgent] 🟢 Component mounted');
+
     const handleVisibilityChange = () => {
       if (document.hidden && stateRef.current === 'listening') {
-        stopListening();
+        voiceCapture.stopCapture();
       }
     };
 
     const handleBlur = () => {
       if (stateRef.current === 'listening') {
-        stopListening();
+        voiceCapture.stopCapture();
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('blur', handleBlur);
 
-    // ============================================================================
-    // STRICT MEMORY CLEANUP: Prevent 'Ghost Voices' and duplicate listeners
-    // ============================================================================
+    // CLEANUP: Only runs on UNMOUNT
     return () => {
+      console.log('[VoiceAgent] 🔴 Component unmounting - final cleanup');
+      isMountedRef.current = false;
+      sessionActiveRef.current = false;
+
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
 
-      // Cancel all voice service operations
+      // Stop all voice operations
       voiceService.cleanup();
 
-      // Clear VAD interval
+      // Clear timers
       if (vadIntervalRef.current) {
         window.clearInterval(vadIntervalRef.current);
         vadIntervalRef.current = null;
       }
-
-      // ============================================================================
-      // 2026 CRITICAL: Stop mic timer to prevent stale interval callbacks
-      // ============================================================================
       if (micTimerRef.current) {
         window.clearInterval(micTimerRef.current);
         micTimerRef.current = null;
       }
 
-      // ============================================================================
-      // 2026 CRITICAL: Cancel all speechSynthesis to prevent ghost voices
-      // ============================================================================
+      // Cancel all speech
       if (typeof window !== 'undefined' && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
       activeUtteranceRef.current = null;
+      (window as any).__voiceAgentUtterance = null;
+      (window as any).__voiceAgentPrimer = null;
 
-      console.log('[VoiceAgent] Global cleanup complete - no ghost voices');
+      console.log('[VoiceAgent] ✅ Final cleanup complete');
     };
-  }, [stopListening]);
+  }, []); // CRITICAL: Empty dependency array!
 
-  // Compute combined error from local state and voiceCapture
+  // === RETURN ===
   const combinedError = error || voiceCapture.error;
   const combinedVoxError = voxError || (voiceCapture.error ? mapErrorToVoxError(voiceCapture.error) : null);
 
@@ -882,13 +807,11 @@ export const useVoiceAgent = ({
     wordsBuffer,
     isLowConfidence,
     isSpeaking,
-    // 2026: Smart-Silence capture props
     silenceProgress: voiceCapture.silenceProgress,
     isSilenceCountdown: voiceCapture.isSilenceCountdown,
     captureState: voiceCapture.captureState,
     fullTranscript: voiceCapture.fullTranscript,
     interimTranscript: voiceCapture.interimTranscript,
-    // 2026 VOICE LIFECYCLE: New mic timer and audio state
     micDuration,
     micDurationSeconds,
     isAudioReady,
@@ -902,7 +825,6 @@ export const useVoiceAgent = ({
     retryFailed,
     clearFailedMessage,
     dispatch,
-    // 2026 VOICE LIFECYCLE: Audio wake-up for autoplay policy
     wakeUpAudio,
   };
 };

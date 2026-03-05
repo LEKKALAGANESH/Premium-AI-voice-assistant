@@ -59,6 +59,7 @@ export class VoiceService {
   // 2026: Audio state tracking
   private isAudioInitialized: boolean = false;
   private playbackAborted: boolean = false;
+  private isCleaningUp: boolean = false; // Guard against recursive cleanup
 
   constructor() {
     const SpeechRecognition =
@@ -339,9 +340,9 @@ export class VoiceService {
         return;
       }
 
-      // Check if playback was aborted during API call
-      if (this.playbackAborted) {
-        console.log('[VoiceService] Playback aborted before audio loaded');
+      // Check if playback was aborted during API call OR cleanup is in progress
+      if (this.playbackAborted || this.isCleaningUp) {
+        console.log('[VoiceService] Playback aborted/cleanup - skipping audio load');
         return;
       }
 
@@ -440,10 +441,24 @@ export class VoiceService {
   }
 
   cleanup() {
-    this.stopListening();
-    this.stopSpeaking();
-    // Note: Don't close the singleton VAD AudioContext here
-    // It will be reused for future sessions
+    // Guard against recursive cleanup
+    if (this.isCleaningUp) {
+      console.log('[VoiceService] ⚠️ Cleanup already in progress, skipping');
+      return;
+    }
+
+    this.isCleaningUp = true;
+    console.log('[VoiceService] 🧹 Cleanup starting...');
+
+    try {
+      this.stopListening();
+      this.stopSpeaking();
+      // Note: Don't close the singleton VAD AudioContext here
+      // It will be reused for future sessions
+    } finally {
+      this.isCleaningUp = false;
+      console.log('[VoiceService] ✅ Cleanup complete');
+    }
   }
 
   // 2026: Full cleanup including AudioContext (call on app unmount)

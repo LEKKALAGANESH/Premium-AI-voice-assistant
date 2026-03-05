@@ -483,19 +483,46 @@ export const VoiceInterface = memo(function VoiceInterface({
         </motion.button>
       </div>
 
-      {/* Status Text */}
-      <motion.p
+      {/* Status Text - ALWAYS VISIBLE */}
+      <motion.div
         key={state + String(isBotSpeaking)}
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
-        className={clsx(
-          'text-sm font-medium',
-          isError ? 'text-red-500' : colors.text
-        )}
-        role="status"
+        className="flex flex-col items-center gap-1"
       >
-        {getStatusText()}
-      </motion.p>
+        {/* Main action label - large and always visible */}
+        <p
+          className={clsx(
+            'text-lg font-bold',
+            isError ? 'text-red-500' : isActive ? colors.text : 'text-zinc-800 dark:text-zinc-200'
+          )}
+          role="status"
+        >
+          {!isActive && state === 'idle' ? (
+            '👆 Tap to Start'
+          ) : isListening ? (
+            '🎤 Listening...'
+          ) : isBotSpeaking ? (
+            '🔊 Speaking...'
+          ) : isProcessing ? (
+            '⏳ Translating...'
+          ) : isError ? (
+            '❌ Error'
+          ) : (
+            '⏹️ Tap to Stop'
+          )}
+        </p>
+
+        {/* Secondary status text */}
+        <p
+          className={clsx(
+            'text-sm',
+            isError ? 'text-red-400' : 'text-zinc-500 dark:text-zinc-400'
+          )}
+        >
+          {getStatusText()}
+        </p>
+      </motion.div>
 
       {/* Partial Transcript with aria-live */}
       <AnimatePresence>

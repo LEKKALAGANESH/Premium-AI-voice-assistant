@@ -18,6 +18,19 @@ export default defineConfig(({mode}) => {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify - file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
+      // CSP headers for development - allows HMR WebSocket connections
+      headers: {
+        'Content-Security-Policy': [
+          "default-src 'self'",
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+          "style-src 'self' 'unsafe-inline'",
+          "img-src 'self' data: blob: https:",
+          "font-src 'self' data:",
+          "connect-src 'self' ws://localhost:* wss://localhost:* http://localhost:* https://generativelanguage.googleapis.com https://*.googleapis.com",
+          "media-src 'self' blob: data:",
+          "worker-src 'self' blob:",
+        ].join('; '),
+      },
     },
     build: {
       rollupOptions: {
