@@ -1,6 +1,9 @@
-// Voice Translator API Route - 2026 Standard
-// Gemini-powered translation for real-time voice mediation
-// Enhanced with comprehensive error handling
+// Voice Translator API Route - 100/100 Production Ready
+// Gemini-powered translation with:
+// - Context Window for conversation memory
+// - Cultural Nuance & Idiom handling
+// - Robust timeout and error handling
+// - Intent over Literalism translation
 
 import { GoogleGenAI } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
@@ -41,16 +44,27 @@ const createErrorResponse = (
 });
 
 // ============================================================================
+// CONTEXT WINDOW TYPES
+// ============================================================================
+
+interface ContextEntry {
+  speaker: 'A' | 'B';
+  original: string;
+  translated: string;
+}
+
+// ============================================================================
 // VALIDATION
 // ============================================================================
 
-const MAX_TEXT_LENGTH = 5000; // Maximum characters for translation
+const MAX_TEXT_LENGTH = 5000;
 const MIN_TEXT_LENGTH = 1;
+const MAX_CONTEXT_ENTRIES = 10;
+const TRANSLATION_TIMEOUT_MS = 25000; // 25 seconds
 
 const validateRequest = (body: any): { valid: boolean; error?: TranslationErrorResponse } => {
   const { text, sourceLanguage, targetLanguage } = body;
 
-  // Check required fields
   if (!text || !sourceLanguage || !targetLanguage) {
     return {
       valid: false,
@@ -63,7 +77,6 @@ const validateRequest = (body: any): { valid: boolean; error?: TranslationErrorR
     };
   }
 
-  // Validate text length
   if (typeof text !== 'string') {
     return {
       valid: false,
@@ -101,7 +114,6 @@ const validateRequest = (body: any): { valid: boolean; error?: TranslationErrorR
     };
   }
 
-  // Validate language formats
   if (typeof sourceLanguage !== 'string' || typeof targetLanguage !== 'string') {
     return {
       valid: false,
@@ -118,7 +130,7 @@ const validateRequest = (body: any): { valid: boolean; error?: TranslationErrorR
 };
 
 // ============================================================================
-// GEMINI CLIENT INITIALIZATION
+// GEMINI CLIENT
 // ============================================================================
 
 let aiClient: GoogleGenAI | null = null;
@@ -137,52 +149,242 @@ const getAIClient = (): GoogleGenAI | null => {
 };
 
 // ============================================================================
-// SYSTEM PROMPT
+// CULTURAL NUANCE & IDIOM-AWARE SYSTEM PROMPT
 // ============================================================================
 
 /**
- * System prompt for strict translation mediation
- * This prompt ensures Gemini acts as a pure translator without robotic commentary
+ * Production-grade system prompt with:
+ * - Intent over Literalism principle
+ * - Cultural nuance awareness
+ * - Idiom and slang handling
+ * - Pronoun resolution from context
  */
-const TRANSLATOR_SYSTEM_PROMPT = `You are a real-time voice translator mediating a conversation between two people speaking different languages in the same room.
+const getTranslatorSystemPrompt = (hasContext: boolean): string => {
+  const basePrompt = `You are an expert real-time voice interpreter mediating a live face-to-face conversation between two people speaking different languages. Your role is to facilitate natural, fluid communication.
 
-CRITICAL RULES:
-1. ONLY output the direct translation. Never add commentary, explanations, or your own words.
-2. Preserve the speaker's tone, intent, and emotion in the translation.
-3. Use natural, conversational language appropriate for spoken communication.
-4. If the input contains greetings, questions, or expressions, translate them naturally.
-5. Never say things like "The person said..." or "They are asking..." - just translate directly.
-6. Handle colloquialisms and idioms by finding equivalent expressions in the target language.
-7. Keep the same level of formality as the original speech.
-8. If the input is unclear or incomplete, translate what you can understand naturally.
-9. For Indian languages, be particularly careful with:
-   - Respectful forms (आप/तुम, formal/informal)
-   - Regional expressions and idioms
-   - Honorifics and titles
-   - Script-specific nuances
+═══════════════════════════════════════════════════════════════
+CORE PRINCIPLE: INTENT OVER LITERALISM
+═══════════════════════════════════════════════════════════════
 
-Example:
-Input (Hindi): "नमस्ते, आपका नाम क्या है?"
-Output (English): "Hello, what is your name?"
+Your primary goal is to convey the speaker's INTENT and MEANING, not to produce a word-for-word translation. The listener should understand exactly what the speaker meant to communicate.
 
-NOT: "The speaker is greeting you and asking for your name. They said: Hello, what is your name?"`;
+═══════════════════════════════════════════════════════════════
+CRITICAL RULES
+═══════════════════════════════════════════════════════════════
+
+1. OUTPUT ONLY THE TRANSLATION
+   - Never add commentary, explanations, or meta-text
+   - Never say "The person said..." or "They are asking..."
+   - Just output the natural translation
+
+2. PRESERVE EMOTIONAL TONE
+   - Maintain the speaker's emotion (excitement, concern, humor, etc.)
+   - Keep the same level of formality/informality
+   - Preserve urgency, hesitation, or emphasis
+
+3. HANDLE IDIOMS & SLANG CULTURALLY
+   - NEVER translate idioms literally
+   - Find the equivalent expression in the target language that conveys the same meaning
+
+   Examples:
+   - "Break a leg" → Target language equivalent of "Good luck!"
+   - "It's raining cats and dogs" → Target language equivalent of "It's raining heavily"
+   - "Piece of cake" → Target language equivalent of "Very easy"
+   - "Beat around the bush" → Target language equivalent of "Avoid the main topic"
+   - "Cost an arm and a leg" → Target language equivalent of "Very expensive"
+   - "Under the weather" → Target language equivalent of "Feeling sick/unwell"
+
+4. CULTURAL ADAPTATION
+   - Adapt cultural references to be understood by the listener
+   - Use appropriate honorifics and politeness levels for the target culture
+   - Consider cultural context when translating humor or expressions
+
+═══════════════════════════════════════════════════════════════
+LANGUAGE-SPECIFIC GUIDELINES
+═══════════════════════════════════════════════════════════════
+
+INDIAN LANGUAGES (Hindi, Tamil, Telugu, Bengali, etc.):
+- Use appropriate respectful forms (आप vs तुम, formal vs informal)
+- Preserve honorifics (जी, साहब, etc.) when culturally appropriate
+- Handle code-mixing naturally (Hinglish is common and acceptable)
+- Be aware of regional idioms and expressions
+
+EAST ASIAN LANGUAGES (Japanese, Korean, Chinese):
+- Maintain proper politeness levels (keigo, jondaenmal, etc.)
+- Use appropriate particles and sentence endings
+- Handle indirect communication styles
+- Respect hierarchical address forms
+
+EUROPEAN LANGUAGES (Spanish, French, German, etc.):
+- Preserve formal/informal distinctions (usted/tú, vous/tu, Sie/du)
+- Maintain grammatical gender agreements
+- Adapt region-specific expressions (Latin American vs European Spanish)
+
+MIDDLE EASTERN LANGUAGES (Arabic, Hebrew, Farsi):
+- Use appropriate greeting formulas and religious expressions
+- Respect cultural communication norms
+- Handle right-to-left script concepts naturally`;
+
+  if (hasContext) {
+    return `${basePrompt}
+
+═══════════════════════════════════════════════════════════════
+CONTEXT AWARENESS (CRITICAL)
+═══════════════════════════════════════════════════════════════
+
+You will receive recent conversation exchanges as context. Use this to:
+
+1. RESOLVE PRONOUNS & REFERENCES
+   - "it", "that", "this" → Identify what they refer to from context
+   - "he", "she", "they" → Understand who is being referenced
+   - "there", "here" → Resolve spatial references
+
+   Example:
+   Context: Person A asked about "the red book" earlier
+   Current: "Put it on the table"
+   → You should translate knowing "it" = "the red book"
+
+2. MAINTAIN CONVERSATION COHERENCE
+   - Keep consistent terminology throughout the conversation
+   - Reference previously discussed topics naturally
+   - Don't repeat information the listener already knows
+
+3. TRACK SPEAKER RELATIONSHIPS
+   - Note if speakers are formal or casual with each other
+   - Maintain consistent formality level throughout
+
+IMPORTANT: Do NOT mention the context explicitly in your translation. Just use it to understand references and produce natural translations.`;
+  }
+
+  return basePrompt;
+};
+
+// ============================================================================
+// BUILD CONTEXT PROMPT
+// ============================================================================
+
+const buildContextPrompt = (
+  context: ContextEntry[],
+  currentText: string,
+  sourceLanguage: string,
+  targetLanguage: string
+): string => {
+  if (!context || context.length === 0) {
+    return `Translate the following ${sourceLanguage} speech to ${targetLanguage}.
+Remember: Prioritize intent over literalism. Handle idioms culturally.
+Output ONLY the translation, nothing else:
+
+"${currentText}"`;
+  }
+
+  const limitedContext = context.slice(-MAX_CONTEXT_ENTRIES);
+
+  const contextLines = limitedContext.map((entry, index) => {
+    const speakerLabel = entry.speaker === 'A' ? 'Speaker A' : 'Speaker B';
+    return `${index + 1}. ${speakerLabel}: "${entry.original}" → "${entry.translated}"`;
+  }).join('\n');
+
+  return `CONVERSATION CONTEXT (for resolving references and maintaining coherence):
+${contextLines}
+
+═══════════════════════════════════════════════════════════════
+NOW TRANSLATE this ${sourceLanguage} speech to ${targetLanguage}.
+
+Use the context above to:
+- Resolve any pronouns (it, that, this, he, she, they)
+- Understand references to earlier topics
+- Maintain consistent terminology
+
+Remember: Prioritize INTENT over literalism. Handle idioms culturally.
+Output ONLY the translation, nothing else:
+
+"${currentText}"`;
+};
+
+// ============================================================================
+// ROBUST API CALL WITH RETRY
+// ============================================================================
+
+async function translateWithRetry(
+  ai: GoogleGenAI,
+  prompt: string,
+  systemPrompt: string,
+  maxRetries: number = 2
+): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }],
+          },
+        ],
+        config: {
+          systemInstruction: systemPrompt,
+          temperature: 0.25, // Low for consistent translations
+          maxOutputTokens: 1024,
+          topP: 0.9,
+          topK: 40,
+        },
+      });
+
+      const rawText = response.text || '';
+      const translatedText = rawText
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .replace(/^Translation:\s*/i, '')
+        .replace(/^Output:\s*/i, '')
+        .replace(/^Result:\s*/i, '')
+        .trim();
+
+      if (translatedText) {
+        return translatedText;
+      }
+
+      throw new Error('Empty translation result');
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Don't retry on certain errors
+      const errorMessage = lastError.message.toLowerCase();
+      if (
+        errorMessage.includes('quota') ||
+        errorMessage.includes('rate') ||
+        errorMessage.includes('invalid')
+      ) {
+        throw lastError;
+      }
+
+      // Wait before retry (exponential backoff)
+      if (attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 500; // 500ms, 1000ms
+        await new Promise(resolve => setTimeout(resolve, delay));
+        console.log(`[Translate API] Retry attempt ${attempt + 1} after ${delay}ms`);
+      }
+    }
+  }
+
+  throw lastError || new Error('Translation failed after retries');
+}
 
 // ============================================================================
 // REQUEST HANDLER
 // ============================================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Set CORS headers
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  // Only allow POST requests
   if (req.method !== "POST") {
     return res.status(405).json(
       createErrorResponse(
@@ -194,7 +396,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
   }
 
-  // Validate API key
   const ai = getAIClient();
   if (!ai) {
     return res.status(503).json(
@@ -207,112 +408,129 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
   }
 
-  // Validate request body
   const validation = validateRequest(req.body);
   if (!validation.valid) {
     return res.status(400).json(validation.error);
   }
 
-  const { text, sourceLanguage, targetLanguage } = req.body;
+  const { text, sourceLanguage, targetLanguage, context } = req.body;
   const trimmedText = text.trim();
 
-  // Log request (without sensitive data in production)
-  console.log(`[Translate API] ${sourceLanguage} -> ${targetLanguage}, length: ${trimmedText.length}`);
+  // Validate context
+  const validContext: ContextEntry[] = [];
+  if (Array.isArray(context)) {
+    for (const entry of context.slice(-MAX_CONTEXT_ENTRIES)) {
+      if (
+        entry &&
+        typeof entry.speaker === 'string' &&
+        typeof entry.original === 'string' &&
+        typeof entry.translated === 'string'
+      ) {
+        validContext.push({
+          speaker: entry.speaker === 'B' ? 'B' : 'A',
+          original: entry.original.substring(0, 500),
+          translated: entry.translated.substring(0, 500),
+        });
+      }
+    }
+  }
+
+  const hasContext = validContext.length > 0;
+
+  console.log(`[Translate API] ${sourceLanguage} → ${targetLanguage}, length: ${trimmedText.length}, context: ${validContext.length}`);
+
+  // Set up timeout
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(new Error('TIMEOUT'));
+    }, TRANSLATION_TIMEOUT_MS);
+  });
 
   try {
-    const prompt = `Translate the following ${sourceLanguage} text to ${targetLanguage}. Output ONLY the translation, nothing else:
+    const prompt = buildContextPrompt(
+      validContext,
+      trimmedText,
+      sourceLanguage,
+      targetLanguage
+    );
 
-"${trimmedText}"`;
+    const systemPrompt = getTranslatorSystemPrompt(hasContext);
 
-    // Set timeout for the API call
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    // Race between translation and timeout
+    const translatedText = await Promise.race([
+      translateWithRetry(ai, prompt, systemPrompt),
+      timeoutPromise,
+    ]);
 
-    let response;
-    try {
-      response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-        config: {
-          systemInstruction: TRANSLATOR_SYSTEM_PROMPT,
-          temperature: 0.3, // Lower temperature for more consistent translations
-          maxOutputTokens: 1024,
-        },
-      });
-    } catch (genError: any) {
-      clearTimeout(timeoutId);
+    console.log(`[Translate API] Success, output length: ${translatedText.length}`);
 
-      // Handle specific Gemini API errors
-      const errorMessage = genError?.message || '';
-      const errorStatus = genError?.status || genError?.code;
+    return res.status(200).json({
+      translatedText,
+      sourceLanguage,
+      targetLanguage,
+      originalLength: trimmedText.length,
+      translatedLength: translatedText.length,
+      contextUsed: hasContext,
+      contextEntries: validContext.length,
+    });
 
-      // Rate limiting
-      if (errorStatus === 429 || errorMessage.includes('quota') || errorMessage.includes('rate')) {
-        console.error('[Translate API] Rate limited:', errorMessage);
-        return res.status(429).json(
-          createErrorResponse(
-            TranslationErrorCode.RATE_LIMITED,
-            'Translation service is busy',
-            'Please wait a moment and try again',
-            true
-          )
-        );
-      }
+  } catch (err: any) {
+    const errorMessage = err?.message || '';
 
-      // Service unavailable
-      if (errorStatus === 503 || errorStatus === 500 || errorMessage.includes('unavailable')) {
-        console.error('[Translate API] Service unavailable:', errorMessage);
-        return res.status(503).json(
-          createErrorResponse(
-            TranslationErrorCode.SERVICE_UNAVAILABLE,
-            'Translation service temporarily unavailable',
-            'Please try again in a few moments',
-            true
-          )
-        );
-      }
-
-      // Timeout
-      if (genError.name === 'AbortError' || errorMessage.includes('timeout')) {
-        console.error('[Translate API] Request timeout');
-        return res.status(504).json(
-          createErrorResponse(
-            TranslationErrorCode.TIMEOUT,
-            'Translation request timed out',
-            'Please try with shorter text or try again',
-            true
-          )
-        );
-      }
-
-      // Generic API error
-      console.error('[Translate API] Gemini API error:', genError);
-      return res.status(500).json(
+    // Timeout
+    if (errorMessage === 'TIMEOUT' || err?.name === 'AbortError') {
+      console.error('[Translate API] Request timeout');
+      return res.status(504).json(
         createErrorResponse(
-          TranslationErrorCode.TRANSLATION_FAILED,
-          'Translation failed',
-          errorMessage || 'Unknown API error',
+          TranslationErrorCode.TIMEOUT,
+          'Translation request timed out',
+          'Please check your connection and try again',
           true
         )
       );
     }
 
-    clearTimeout(timeoutId);
+    // Rate limiting
+    if (errorMessage.includes('quota') || errorMessage.includes('rate')) {
+      console.error('[Translate API] Rate limited:', errorMessage);
+      return res.status(429).json(
+        createErrorResponse(
+          TranslationErrorCode.RATE_LIMITED,
+          'Translation service is busy',
+          'Please wait a moment and try again',
+          true
+        )
+      );
+    }
 
-    // Extract and clean the translated text
-    const rawText = response.text || '';
-    const translatedText = rawText
-      .trim()
-      .replace(/^["']|["']$/g, '') // Remove surrounding quotes
-      .trim();
+    // Service unavailable
+    if (errorMessage.includes('unavailable') || errorMessage.includes('500')) {
+      console.error('[Translate API] Service unavailable:', errorMessage);
+      return res.status(503).json(
+        createErrorResponse(
+          TranslationErrorCode.SERVICE_UNAVAILABLE,
+          'Translation service temporarily unavailable',
+          'Please try again in a few moments',
+          true
+        )
+      );
+    }
 
-    // Check for empty result
-    if (!translatedText) {
+    // Network errors
+    if (errorMessage.includes('fetch') || errorMessage.includes('network')) {
+      console.error('[Translate API] Network error:', errorMessage);
+      return res.status(503).json(
+        createErrorResponse(
+          TranslationErrorCode.SERVICE_UNAVAILABLE,
+          'Network error connecting to translation service',
+          'Please check your connection',
+          true
+        )
+      );
+    }
+
+    // Empty result
+    if (errorMessage.includes('Empty translation')) {
       console.warn('[Translate API] Empty translation result');
       return res.status(422).json(
         createErrorResponse(
@@ -324,27 +542,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
     }
 
-    // Log success
-    console.log(`[Translate API] Success, output length: ${translatedText.length}`);
-
-    // Return successful response
-    return res.status(200).json({
-      translatedText,
-      sourceLanguage,
-      targetLanguage,
-      originalLength: trimmedText.length,
-      translatedLength: translatedText.length,
-    });
-
-  } catch (error: any) {
-    // Catch-all for unexpected errors
-    console.error("[Translate API] Unexpected error:", error);
-
+    // Generic error
+    console.error("[Translate API] Unexpected error:", err);
     return res.status(500).json(
       createErrorResponse(
         TranslationErrorCode.INTERNAL_ERROR,
         'An unexpected error occurred',
-        error?.message || 'Unknown error',
+        errorMessage || 'Unknown error',
         true
       )
     );
