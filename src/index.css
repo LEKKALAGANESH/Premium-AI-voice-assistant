@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap");
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -6,6 +6,7 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Outfit", sans-serif;
+  --font-premium: "Playfair Display", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
   --color-brand-50: #f0fdf4;
@@ -795,8 +796,83 @@
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  /* Offset upward to account for footer - true optical center */
-  /* padding-top: 10%; */
+}
+
+/* === DISCOVERY ENGINE: Premium Welcome Screen === */
+
+/* Orb: Gradient icon container with slow rotation glow */
+.vox-discovery-orb {
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6, #06b6d4);
+  background-size: 200% 200%;
+  animation: vox-orb-shift 4s ease-in-out infinite;
+  box-shadow:
+    0 0 24px rgba(139, 92, 246, 0.3),
+    0 0 48px rgba(59, 130, 246, 0.15);
+}
+@keyframes vox-orb-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Heading: Deep Sea Blue to Electric Purple gradient text */
+.vox-discovery-heading {
+  background: linear-gradient(135deg, #1e3a5f 0%, #3b82f6 30%, #8b5cf6 70%, #a855f7 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.dark .vox-discovery-heading {
+  background: linear-gradient(135deg, #60a5fa 0%, #818cf8 40%, #c084fc 70%, #e879f9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Suggestion Cards: Glassmorphism with hover glow */
+.vox-suggestion-card {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+  cursor: pointer;
+}
+.dark .vox-suggestion-card {
+  background: rgba(39, 39, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.vox-suggestion-card:hover {
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.15),
+    0 4px 16px rgba(34, 197, 94, 0.1),
+    0 0 32px rgba(34, 197, 94, 0.05);
+  border-color: rgba(34, 197, 94, 0.25);
+}
+.dark .vox-suggestion-card:hover {
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.2),
+    0 4px 16px rgba(34, 197, 94, 0.12),
+    0 0 32px rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+/* Suggestion Card Icon: Soft tinted background */
+.vox-suggestion-icon {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.dark .vox-suggestion-icon {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+}
+.vox-suggestion-card:hover .vox-suggestion-icon {
+  background: rgba(34, 197, 94, 0.2);
+  color: #15803d;
+}
+.dark .vox-suggestion-card:hover .vox-suggestion-icon {
+  background: rgba(34, 197, 94, 0.22);
+  color: #4ade80;
 }
 
 /* Inner container for Virtuoso proper height inheritance */
@@ -836,6 +912,55 @@
 
 .dark .vox-unified-input {
   background: #27272a; /* zinc-800 - subtle contrast */
+}
+
+/* === VERSATILITY ENGINE: MODE SELECTOR DROPDOWN === */
+.vox-mode-trigger {
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.vox-mode-dropdown-inner {
+  background: rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(228, 228, 231, 0.6);
+  box-shadow:
+    0 8px 32px -4px rgba(0, 0, 0, 0.12),
+    0 4px 12px -2px rgba(0, 0, 0, 0.08);
+}
+
+.dark .vox-mode-dropdown-inner {
+  background: rgba(24, 24, 27, 0.92);
+  border-color: rgba(63, 63, 70, 0.6);
+  box-shadow:
+    0 8px 32px -4px rgba(0, 0, 0, 0.4),
+    0 4px 12px -2px rgba(0, 0, 0, 0.3);
+}
+
+/* === BRAIN SHIFT: 2s glow on mode change === */
+@keyframes vox-brain-shift-glow {
+  0% {
+    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.5), 0 0 16px rgba(34, 197, 94, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35), 0 0 24px rgba(34, 197, 94, 0.15);
+  }
+  100% {
+    box-shadow: none;
+  }
+}
+
+.vox-brain-shift {
+  animation: vox-brain-shift-glow 2s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vox-brain-shift {
+    animation: none;
+    box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.3);
+  }
 }
 
 /* Remove all focus styles from textarea */
@@ -1212,5 +1337,802 @@
     opacity: 1 !important;
     clip-path: none !important;
     transform: none !important;
+  }
+}
+
+/* === PREMIUM TAB BAR === */
+.vox-tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  background: #f4f4f5;
+  border-radius: var(--vox-radius-xl);
+}
+
+.dark .vox-tab-bar {
+  background: #18181b;
+}
+
+.vox-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: calc(var(--vox-radius-xl) - 2px);
+  font-size: var(--vox-text-sm);
+  font-weight: 500;
+  color: #71717a;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.vox-tab:hover {
+  color: #3f3f46;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dark .vox-tab:hover {
+  color: #d4d4d8;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vox-tab.active {
+  color: #09090b;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.dark .vox-tab.active {
+  color: #f4f4f5;
+  background: #27272a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Active tab glow for translator */
+.vox-tab.active.translator-tab {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(16, 185, 129, 0.15);
+}
+
+.dark .vox-tab.active.translator-tab {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(16, 185, 129, 0.25);
+}
+
+/* === THINKING PULSE ANIMATION === */
+@keyframes vox-thinking-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.vox-thinking-pulse {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--vox-radius-xl);
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(16, 185, 129, 0.08) 100%);
+  border: 1px solid rgba(59, 130, 246, 0.12);
+}
+
+.dark .vox-thinking-pulse {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(16, 185, 129, 0.12) 100%);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.vox-thinking-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #3b82f6;
+  animation: vox-thinking-pulse 1.4s ease-in-out infinite;
+}
+
+.vox-thinking-dot:nth-child(2) {
+  animation-delay: 0.2s;
+  background: #6366f1;
+}
+
+.vox-thinking-dot:nth-child(3) {
+  animation-delay: 0.4s;
+  background: #10b981;
+}
+
+/* === LANGUAGE CODE BADGE === */
+.vox-lang-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.vox-lang-badge.badge-blue {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.dark .vox-lang-badge.badge-blue {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+.vox-lang-badge.badge-emerald {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.dark .vox-lang-badge.badge-emerald {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+}
+
+/* === PREMIUM TRANSLATOR HEADER GRADIENT === */
+.vox-translator-gradient-header {
+  background: linear-gradient(135deg, #f0fdf4 0%, #ecfeff 50%, #eff6ff 100%);
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.dark .vox-translator-gradient-header {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.05) 0%, rgba(6, 182, 212, 0.05) 50%, rgba(59, 130, 246, 0.05) 100%);
+  border-bottom-color: #27272a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vox-thinking-dot {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* === PILLAR 2: SPEAKING GLOW ANIMATION === */
+/* Subtle pulse animation on bot bubble while TTS is active */
+@keyframes vox-speaking-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px -2px rgba(34, 197, 94, 0.2), 0 0 16px -4px rgba(34, 197, 94, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 16px -2px rgba(34, 197, 94, 0.4), 0 0 32px -4px rgba(34, 197, 94, 0.2);
+  }
+}
+
+/* Vox-Polish: Premium "Culinary Menu" bold typography */
+.vox-premium-bold {
+  font-family: var(--font-premium);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-feature-settings: "liga" 1, "kern" 1;
+}
+
+.vox-speaking-glow {
+  animation: vox-speaking-glow 2s ease-in-out infinite;
+}
+
+.dark .vox-speaking-glow {
+  animation: vox-speaking-glow-dark 2s ease-in-out infinite;
+}
+
+@keyframes vox-speaking-glow-dark {
+  0%, 100% {
+    box-shadow: 0 0 8px -2px rgba(34, 197, 94, 0.15), 0 0 16px -4px rgba(34, 197, 94, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 16px -2px rgba(34, 197, 94, 0.3), 0 0 32px -4px rgba(34, 197, 94, 0.15);
+  }
+}
+
+/* === PILLAR 3: FLOATING GLASSMORPHISM BOTTOM DOCK === */
+.vox-floating-dock {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--vox-z-action-bar);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.375rem;
+  border-radius: 1.25rem;
+
+  /* Glassmorphism effect */
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.08),
+    0 2px 8px rgba(0, 0, 0, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.dark .vox-floating-dock {
+  background: rgba(24, 24, 27, 0.72);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+  border-color: rgba(63, 63, 70, 0.3);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.3),
+    0 2px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Dock item (tab button) */
+.vox-dock-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.125rem;
+  padding: 0.5rem 1rem;
+  border-radius: 0.875rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #71717a;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  white-space: nowrap;
+}
+
+/* Bounce hover effect */
+.vox-dock-item:hover {
+  transform: translateY(-3px);
+  color: #3f3f46;
+}
+
+.dark .vox-dock-item:hover {
+  color: #d4d4d8;
+}
+
+/* Active dock item */
+.vox-dock-item.active {
+  color: #09090b;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.dark .vox-dock-item.active {
+  color: #f4f4f5;
+  background: rgba(63, 63, 70, 0.6);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Active indicator dot */
+.vox-dock-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0.125rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0.25rem;
+  height: 0.25rem;
+  border-radius: 50%;
+  background: #22c55e;
+}
+
+/* Dock icon container */
+.vox-dock-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.vox-dock-item:hover .vox-dock-icon {
+  transform: scale(1.15);
+}
+
+/* Mobile: wider dock */
+@media (max-width: 767px) {
+  .vox-floating-dock {
+    bottom: 0.75rem;
+    padding: 0.25rem;
+  }
+
+  .vox-dock-item {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.5625rem;
+  }
+}
+
+/* Reduced motion: disable bounce */
+@media (prefers-reduced-motion: reduce) {
+  .vox-dock-item:hover {
+    transform: none;
+  }
+
+  .vox-speaking-glow,
+  .dark .vox-speaking-glow {
+    animation: none;
+  }
+}
+
+/* === PILLAR 3: MICRO-EXPRESSION CONTAINER === */
+/* Extra bottom padding on input to accommodate micro-expression label */
+.vox-input-with-expression {
+  padding-bottom: 1.75rem;
+}
+
+/* === UNIFIED BOT: Voice-Active Input Dimming === */
+/* When voice mode is active, dim the textarea zone to focus attention on the AI Core button */
+.vox-unified-input.voice-active .vox-textarea-zone {
+  opacity: 0.35;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+.vox-unified-input.voice-active .vox-textarea-zone textarea {
+  cursor: not-allowed;
+}
+
+/* Keep the action slot fully visible */
+.vox-unified-input.voice-active .vox-action-slot {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* === UNIFIED BOT: AI Core Button Glow === */
+/* Central glow behind the mic/brain icon when voice mode is active */
+@keyframes vox-core-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 12px 2px rgba(34, 197, 94, 0.25),
+      0 0 24px 4px rgba(34, 197, 94, 0.1);
+  }
+  50% {
+    box-shadow:
+      0 0 20px 4px rgba(34, 197, 94, 0.4),
+      0 0 40px 8px rgba(34, 197, 94, 0.15);
+  }
+}
+
+@keyframes vox-core-glow-dark {
+  0%, 100% {
+    box-shadow:
+      0 0 12px 2px rgba(34, 197, 94, 0.2),
+      0 0 24px 4px rgba(34, 197, 94, 0.08);
+  }
+  50% {
+    box-shadow:
+      0 0 20px 4px rgba(34, 197, 94, 0.3),
+      0 0 40px 8px rgba(34, 197, 94, 0.12);
+  }
+}
+
+.vox-core-glow {
+  animation: vox-core-glow 2s ease-in-out infinite;
+}
+
+.dark .vox-core-glow {
+  animation: vox-core-glow-dark 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vox-unified-input.voice-active {
+    transition: none;
+  }
+
+  .vox-core-glow,
+  .dark .vox-core-glow {
+    animation: none;
+    box-shadow: 0 0 12px 2px rgba(34, 197, 94, 0.2);
+  }
+}
+
+/* === PREMIUM POLISH: NEURAL ORB (Bot Avatar) === */
+
+/* Neural Orb base: radial gradient with glass effect */
+.vox-neural-orb {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(
+    circle at 38% 38%,
+    rgba(99, 102, 241, 0.22) 0%,
+    rgba(59, 130, 246, 0.12) 45%,
+    rgba(6, 182, 212, 0.06) 75%,
+    transparent 100%
+  );
+  border: 1px solid rgba(99, 102, 241, 0.18) !important;
+  transition: box-shadow 0.4s ease, border-color 0.4s ease;
+}
+
+.dark .vox-neural-orb {
+  background: radial-gradient(
+    circle at 38% 38%,
+    rgba(99, 102, 241, 0.32) 0%,
+    rgba(59, 130, 246, 0.18) 45%,
+    rgba(6, 182, 212, 0.1) 75%,
+    transparent 100%
+  );
+  border-color: rgba(99, 102, 241, 0.25) !important;
+}
+
+/* Conic gradient spinner layer (GPU-accelerated: transform only) */
+.vox-neural-orb::before {
+  content: '';
+  position: absolute;
+  inset: -35%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0%,
+    rgba(99, 102, 241, 0.25) 25%,
+    rgba(34, 197, 94, 0.18) 50%,
+    rgba(6, 182, 212, 0.18) 75%,
+    transparent 100%
+  );
+  border-radius: 50%;
+  opacity: 0;
+  transform: rotate(0deg);
+  transition: opacity 0.3s ease;
+  will-change: transform;
+}
+
+/* Idle: soft breathing glow */
+@keyframes vox-neural-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 8px 1px rgba(99, 102, 241, 0.12),
+      inset 0 0 5px rgba(99, 102, 241, 0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 14px 3px rgba(99, 102, 241, 0.22),
+      inset 0 0 8px rgba(99, 102, 241, 0.1);
+  }
+}
+
+.vox-neural-orb.idle {
+  animation: vox-neural-breathe 3s ease-in-out infinite;
+}
+
+/* Streaming/Processing: fast conic-gradient spin */
+@keyframes vox-neural-spin {
+  to { transform: rotate(360deg); }
+}
+
+.vox-neural-orb.processing::before {
+  opacity: 1;
+  animation: vox-neural-spin 1.5s linear infinite;
+}
+
+/* Speaking: emerald-accented glow */
+.vox-neural-orb.speaking {
+  border-color: rgba(16, 185, 129, 0.35) !important;
+  box-shadow:
+    0 0 10px 2px rgba(16, 185, 129, 0.18),
+    inset 0 0 6px rgba(16, 185, 129, 0.08);
+}
+
+.dark .vox-neural-orb.speaking {
+  border-color: rgba(16, 185, 129, 0.28) !important;
+  box-shadow:
+    0 0 10px 2px rgba(16, 185, 129, 0.12),
+    inset 0 0 6px rgba(16, 185, 129, 0.06);
+}
+
+/* Audio wave bars inside orb (speaking state) */
+.vox-orb-wave {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5px;
+  z-index: 1;
+}
+
+@keyframes vox-orb-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+
+.vox-orb-wave-bar {
+  width: 2.5px;
+  height: 13px;
+  border-radius: 9999px;
+  background: #10b981;
+  transform-origin: center;
+  animation: vox-orb-bar 0.6s ease-in-out infinite;
+}
+
+.dark .vox-orb-wave-bar {
+  background: #34d399;
+}
+
+.vox-orb-wave-bar:nth-child(1) { animation-delay: 0s; }
+.vox-orb-wave-bar:nth-child(2) { animation-delay: 0.12s; }
+.vox-orb-wave-bar:nth-child(3) { animation-delay: 0.24s; }
+
+/* Mode icon transition inside orb */
+.vox-orb-icon {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  z-index: 1;
+}
+
+/* === PREMIUM POLISH: BENTO BARS (Listening Indicator) === */
+
+@keyframes vox-bento-oscillate {
+  0%, 100% { transform: scaleY(0.3); }
+  30% { transform: scaleY(0.85); }
+  55% { transform: scaleY(1); }
+  80% { transform: scaleY(0.5); }
+}
+
+.vox-bento-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.vox-bento-bar {
+  width: 3.5px;
+  border-radius: 2px;
+  background: #ffffff;
+  transform-origin: center;
+  animation: vox-bento-oscillate 0.8s ease-in-out infinite;
+}
+
+.vox-bento-bar:nth-child(1) { height: 14px; animation-delay: 0s; animation-duration: 0.72s; }
+.vox-bento-bar:nth-child(2) { height: 18px; animation-delay: 0.1s; animation-duration: 0.88s; }
+.vox-bento-bar:nth-child(3) { height: 12px; animation-delay: 0.05s; animation-duration: 0.65s; }
+.vox-bento-bar:nth-child(4) { height: 16px; animation-delay: 0.15s; animation-duration: 0.82s; }
+
+/* === PREMIUM POLISH: SIRI WAVE (Speaking Indicator) === */
+
+@keyframes vox-siri-flow {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+.vox-siri-wave {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 18px;
+}
+
+.vox-siri-wave-path {
+  animation: vox-siri-flow 1.8s linear infinite;
+  will-change: transform;
+}
+
+/* === PREMIUM POLISH: MINI NEURAL ORB (AICoreButton Idle) === */
+
+.vox-mini-orb {
+  background: radial-gradient(
+    circle at 38% 38%,
+    rgba(99, 102, 241, 0.18) 0%,
+    rgba(59, 130, 246, 0.1) 50%,
+    rgba(244, 244, 245, 0.6) 100%
+  ) !important;
+  border: 1px solid rgba(99, 102, 241, 0.12) !important;
+  animation: vox-neural-breathe 3s ease-in-out infinite;
+}
+
+.dark .vox-mini-orb {
+  background: radial-gradient(
+    circle at 38% 38%,
+    rgba(99, 102, 241, 0.28) 0%,
+    rgba(59, 130, 246, 0.14) 50%,
+    rgba(24, 24, 27, 0.6) 100%
+  ) !important;
+  border-color: rgba(99, 102, 241, 0.22) !important;
+}
+
+/* === PREMIUM POLISH: Reduced Motion === */
+@media (prefers-reduced-motion: reduce) {
+  .vox-neural-orb.idle,
+  .vox-mini-orb {
+    animation: none;
+  }
+
+  .vox-neural-orb.processing::before {
+    animation: none;
+    opacity: 0.4;
+  }
+
+  .vox-orb-wave-bar,
+  .vox-bento-bar {
+    animation: none;
+    transform: scaleY(0.6);
+  }
+
+  .vox-siri-wave-path {
+    animation: none;
+  }
+}
+
+/* === STRICT PERSONA: TRANSLATOR BILINGUAL CARD === */
+
+.vox-translation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.vox-translation-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+}
+
+.dark .vox-translation-card-header {
+  border-bottom-color: rgba(99, 102, 241, 0.25);
+}
+
+.vox-translation-card-body {
+  font-size: var(--vox-text-sm);
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+}
+
+/* === STRICT PERSONA: MENTOR NEXT-STEPS CTA === */
+
+.vox-mentor-cta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--vox-radius-lg);
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  color: #15803d;
+  font-size: var(--vox-text-xs);
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.dark .vox-mentor-cta {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.25);
+  color: #4ade80;
+}
+
+/* === SILENT SWAP: Title fade transition for seamless AI rename === */
+
+@keyframes vox-title-fade {
+  0% { opacity: 0.3; }
+  100% { opacity: 1; }
+}
+
+.vox-title-swap {
+  animation: vox-title-fade 0.4s ease forwards;
+}
+
+/* === ELEGANT INTERACTION: ACTIONABLE REMINDER CARDS === */
+
+.vox-action-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.vox-action-card {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--vox-radius-lg);
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(228, 228, 231, 0.6);
+  -webkit-backdrop-filter: blur(12px) saturate(160%);
+  backdrop-filter: blur(12px) saturate(160%);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.vox-action-card:hover {
+  border-color: rgba(245, 158, 11, 0.4);
+  box-shadow: 0 2px 8px -2px rgba(245, 158, 11, 0.12);
+}
+
+.dark .vox-action-card {
+  background: rgba(39, 39, 42, 0.7);
+  border-color: rgba(63, 63, 70, 0.6);
+}
+
+.dark .vox-action-card:hover {
+  border-color: rgba(245, 158, 11, 0.5);
+  box-shadow: 0 2px 8px -2px rgba(245, 158, 11, 0.15);
+}
+
+.vox-action-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--vox-radius-md);
+  background: rgba(245, 158, 11, 0.1);
+  flex-shrink: 0;
+}
+
+.dark .vox-action-card-icon {
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.vox-action-card-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 0.125rem;
+}
+
+.vox-action-card-title {
+  font-size: var(--vox-text-sm);
+  font-weight: 600;
+  color: #18181b;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dark .vox-action-card-title {
+  color: #f4f4f5;
+}
+
+.vox-action-card-desc {
+  font-size: var(--vox-text-xs);
+  color: #71717a;
+  line-height: 1.3;
+}
+
+.dark .vox-action-card-desc {
+  color: #a1a1aa;
+}
+
+.vox-action-card-btn {
+  flex-shrink: 0;
+  padding: 0.375rem 0.75rem;
+  border-radius: var(--vox-radius-md);
+  background: #f59e0b;
+  color: white;
+  font-size: var(--vox-text-xs);
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.vox-action-card-btn:hover {
+  background: #d97706;
+}
+
+.vox-action-card-btn:active {
+  transform: scale(0.96);
+}
+
+.vox-action-card-btn.activated {
+  background: #22c55e;
+  cursor: default;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vox-action-card-btn:active {
+    transform: none;
   }
 }

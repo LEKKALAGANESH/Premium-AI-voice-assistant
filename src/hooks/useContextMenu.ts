@@ -14,8 +14,8 @@ export interface UseContextMenuReturn {
   openMenu: (id: string, anchorRect: DOMRect) => void;
   closeMenu: () => void;
   isMenuOpen: (id: string) => boolean;
-  triggerRef: React.RefObject<HTMLButtonElement>;
-  menuRef: React.RefObject<HTMLDivElement>;
+  triggerRef: React.RefObject<HTMLButtonElement | null>;
+  menuRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export const useContextMenu = (): UseContextMenuReturn => {

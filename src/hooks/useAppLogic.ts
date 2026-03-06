@@ -11,7 +11,27 @@ import { useSpeechTextSync, SyncState } from './useSpeechTextSync';
 import { useAnalytics } from './useAnalytics';
 import { chatService } from '../services/chat';
 import { storageService } from '../services/storage';
+import { StreamProcessor } from '../lib/StreamProcessor';
+import { VoiceQueue } from '../lib/VoiceQueue';
+import { detectLocale } from '../lib/localeDetector';
 import { Message, InputMode, FailedMessage, Conversation, MessageSource } from '../types';
+import { getMode, VoxMode } from '../lib/modes';
+
+// World-Wide Vox: Cloud TTS fallback — calls /api/ai/tts when no local voice exists
+const cloudTtsFallback = async (text: string, lang: string): Promise<string | null> => {
+  try {
+    const response = await fetch('/api/ai/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, lang }),
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data?.audio || null;
+  } catch {
+    return null;
+  }
+};
 
 // 2026 UNIFIED PIPELINE: Internal message source types for single-path routing
 type InternalMessageSource = 'text' | 'voice' | 'suggestion' | 'deterministic';
@@ -81,11 +101,16 @@ export const useAppLogic = () => {
   const voiceConfidenceRef = useRef(1);
   const voiceAgentRef = useRef<{
     speak: (text: string) => Promise<void>;
+    beginSpeaking: () => void;
+    finishSpeaking: () => void;
     setError: (err: string | null) => void;
     isSpeaking: boolean;
     wordsBuffer: string[];
     currentSpokenWordIndex: number;
   } | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+  // Track intentional aborts (barge-in) vs unexpected ones
+  const intentionalAbortRef = useRef(false);
 
   // Auto-collapse sidebar on mobile
   useEffect(() => {
@@ -99,15 +124,20 @@ export const useAppLogic = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, [settings.sidebarCollapsed, updateSettings]);
 
+  // Zero-Wait Engine: Live transcript shown in chat bubble while user speaks
+  const [liveTranscript, setLiveTranscript] = useState('');
+
   // 2026: Handle transcript with confidence tracking
   const handleTranscript = useCallback(
     (text: string, isFinal: boolean, confidence: number) => {
       voiceConfidenceRef.current = confidence;
       if (isFinal) {
         setInputText('');
+        setLiveTranscript('');
         voiceFlowRef.current = true;
       } else {
         setStreamingText(text);
+        setLiveTranscript(text);
       }
     },
     []
@@ -223,108 +253,351 @@ export const useAppLogic = () => {
       // Clear input state AFTER user message is persisted
       setInputText('');
       setStreamingText('');
+      setLiveTranscript('');
       setIsThinking(true);
 
       try {
         // ========================================
-        // STEP 4: GENERATE AI RESPONSE
-        // ========================================
-        const aiResponse = await chatService.generateResponse(text, history);
-
-        // ========================================
-        // STEP 5: CREATE & PERSIST ASSISTANT PLACEHOLDER
+        // STEP 4: CREATE ASSISTANT PLACEHOLDER (before response)
         // ========================================
         const assistantMsgId = uuidv4();
         const assistantTimestamp = Date.now();
         const assistantMsg: Message = {
           id: assistantMsgId,
           role: 'assistant',
-          content: '', // Will be filled progressively
+          content: '',
           timestamp: assistantTimestamp,
-          createdAt: assistantTimestamp, // 2026 Analytics: Absolute timestamp
-          isDeterministic: aiResponse.includes('[LIVE DATA]'),
-          // latency will be set at final persistence
+          createdAt: assistantTimestamp,
+          isDeterministic: false,
         };
-
-        // STRICT SAVE-ORDER: Persist assistant placeholder FIRST
         await addMessage(activeId, assistantMsg);
 
-        setIsThinking(false);
-
-        // Setup sync engine for this message
-        setActiveSyncText(aiResponse);
-        setActiveSyncMessageId(assistantMsgId);
-
-        // Start TTS for responses - voice flows always speak, text flows use speakResponses setting
-        const shouldSpeak = settings.voiceEnabled && voiceAgentRef.current &&
-          (isVoiceFlow || settings.speakResponses);
-        if (shouldSpeak) {
-          voiceAgentRef.current.speak(aiResponse).catch(console.error);
-        }
+        let aiResponse: string = '';
 
         // ========================================
-        // STEP 6: RENDERING (Progressive vs Instant based on TTS)
+        // STEP 5: GENERATE AI RESPONSE (branching)
         // ========================================
-        // 2026: When speakResponses is OFF in text flow, use instant reveal
-        // with smooth column animation instead of word-by-word streaming
-        const useInstantReveal = isTextFlow && !settings.speakResponses;
+        // Versatility Engine: Resolve active mode config for TTS tuning + API routing
+        const activeMode = getMode((settings.activeMode || 'assistant') as VoxMode);
+        const modeSpeechRate = activeMode.speechRate;
 
-        if (useInstantReveal) {
-          // INSTANT REVEAL: Show full text immediately with column animation
-          // Rows appear fully, columns reveal with 100ms stagger via CSS
-          setColumnRevealMessageId(assistantMsgId);
-          await updateMessageContent(activeId, assistantMsgId, aiResponse, false);
+        if (isVoiceFlow && settings.voiceEnabled && voiceAgentRef.current) {
+          // ==============================================================
+          // STREAMING VOICE PATH — Sub-second time-to-first-audio
+          //
+          // Pipeline: SSE chunks → StreamProcessor → VoiceQueue → speech
+          // Voice starts the millisecond the first sentence boundary
+          // (. ! ?) is detected — no waiting for the full response.
+          // ==============================================================
+          console.log('[PIPELINE] 🔊 Voice path activated — streaming TTS enabled');
 
-          // Brief pause to allow animation to start before clearing states
-          await new Promise((resolve) => setTimeout(resolve, 50));
+          // Audio Priming: warm the browser's audio engine during API latency
+          // VOICE RECOVERY: Use a single space ' ' instead of empty string ''
+          // — empty string corrupts Chrome's speech engine state, causing silent drops.
+          if (typeof window !== 'undefined' && window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+            if (window.speechSynthesis.paused) {
+              window.speechSynthesis.resume();
+            }
+            const primer = new SpeechSynthesisUtterance(' ');
+            primer.volume = 0;
+            window.speechSynthesis.speak(primer);
+          }
+
+          // Zero-Wait Engine: Ultra-aggressive sentence detection for sub-second TTFA
+          const processor = new StreamProcessor({
+            minSpeakableLength: 4,
+            clauseThreshold: 20,
+            maxBufferSize: 60,
+            splitOnNewline: true,
+          });
+
+          // Promise that resolves when all queued speech finishes
+          let resolveSpeechDone: (() => void) | null = null;
+          const speechDone = new Promise<void>(r => { resolveSpeechDone = r; });
+          let firstSentenceSpoken = false;
+
+          const queue = new VoiceQueue({
+            rate: modeSpeechRate,
+            lang: 'en-US',
+            cloudTtsFallback,
+            onSpeakStart: () => {
+              if (!firstSentenceSpoken) {
+                firstSentenceSpoken = true;
+                voiceAgentRef.current?.beginSpeaking();
+              }
+            },
+            onDrained: () => {
+              resolveSpeechDone?.();
+              // Neural Orb: reset lip sync intensity when speech ends
+              (window as any).__voxVowelIntensity = 0;
+            },
+            onWordBoundary: (word) => {
+              // Neural Orb Lip Sync: compute vowel intensity for current word
+              const vowels = (word.match(/[aeiouAEIOU]/g) || []).length;
+              (window as any).__voxVowelIntensity = Math.min(vowels / 3, 1);
+            },
+          });
+
+          const streamAbort = new AbortController();
+          streamAbortRef.current = streamAbort;
+
+          setIsThinking(false);
+
+          let accumulatedText = '';
+          let localeDetected = false;
+          const MAX_RETRIES = 1;
+          let retries = 0;
+          let streamSuccess = false;
+
+          while (!streamSuccess && retries <= MAX_RETRIES) {
+            try {
+              const streamAbortInner = retries > 0 ? new AbortController() : streamAbort;
+              if (retries > 0) streamAbortRef.current = streamAbortInner;
+
+              aiResponse = await chatService.streamResponse(
+                text,
+                history,
+                (chunk) => {
+                  accumulatedText += chunk;
+                  // Progressive text rendering as chunks arrive
+                  updateMessageContent(activeId, assistantMsgId, accumulatedText, false);
+                  setStreamingText(accumulatedText);
+
+                  // World-Wide Vox: Detect locale from first ~50 chars of response
+                  if (!localeDetected && accumulatedText.length >= 50) {
+                    localeDetected = true;
+                    const { locale } = detectLocale(accumulatedText);
+                    if (locale !== 'en-US') {
+                      console.log('[PIPELINE] 🌍 Locale detected:', locale);
+                      queue.updateConfig({ lang: locale });
+                    }
+                  }
+
+                  // First-Period Trigger: detect sentence boundaries, enqueue immediately
+                  const { segments } = processor.processChunk(chunk);
+                  for (const seg of segments) {
+                    console.log('[PIPELINE] 🔊 Enqueuing sentence (voice):', seg.text.substring(0, 50));
+                    queue.enqueue(seg.text);
+                  }
+                },
+                streamAbortInner.signal,
+                settings.activeMode,
+              );
+              streamSuccess = true;
+            } catch (err) {
+              // AbortError from barge-in: clean up silently, don't retry
+              if (err instanceof DOMException && err.name === 'AbortError') {
+                queue.destroy();
+                processor.reset();
+                streamAbortRef.current = null;
+                // Use whatever text we accumulated — exit the voice flow gracefully
+                aiResponse = accumulatedText || text;
+                streamSuccess = true; // don't retry aborts
+                // Skip the TTS finalization below
+                break;
+              }
+
+              retries++;
+              if (retries > MAX_RETRIES) {
+                queue.destroy();
+                processor.reset();
+                streamAbortRef.current = null;
+                throw err;
+              }
+              // Brief pause before retry
+              await new Promise(r => setTimeout(r, 500));
+              console.warn(`[PIPELINE] Stream failed, retrying (${retries}/${MAX_RETRIES})...`);
+            }
+          }
+
+          // Flush remaining text in the processor buffer
+          const lastSegment = processor.flush();
+          if (lastSegment) queue.enqueue(lastSegment.text);
+
+          // Signal: no more sentences coming. onDrained fires after last sentence.
+          queue.markStreamComplete();
+
+          // Wait for ALL speech to finish before continuing
+          await speechDone;
+
+          queue.destroy();
+          processor.reset();
+          streamAbortRef.current = null;
+
+          // Signal voice agent: done speaking, trigger loop-back to listening
+          console.log('[PIPELINE] ✅ Voice path complete — all speech drained, calling finishSpeaking');
+          voiceAgentRef.current.finishSpeaking();
+
+          // Setup sync engine
+          setActiveSyncText(aiResponse);
+          setActiveSyncMessageId(assistantMsgId);
+
         } else {
-          // PROGRESSIVE RENDERING: Word-by-word with 5-word look-ahead
-          const words = aiResponse.split(' ');
-          const BUFFER_SIZE = 5;
+          // ==============================================================
+          // STREAMING TEXT PATH — Sub-second TTFT via SSE
+          //
+          // Pipeline: SSE chunks → progressive text update → immediate render
+          // Text appears word-by-word as LLM generates. TTS starts in parallel.
+          // ==============================================================
 
-          for (let i = 0; i < words.length; i++) {
-            // GUARDRAIL: Check if lock is still ours (defensive)
-            if (getLockedConversationId() !== activeId) {
-              console.error('[UNIFIED PIPELINE] Lock stolen during rendering');
-              break;
+          const streamAbort = new AbortController();
+          streamAbortRef.current = streamAbort;
+
+          // Clear thinking indicator as soon as first chunk arrives
+          let firstChunkReceived = false;
+          let accumulatedText = '';
+
+          // TTS setup: if speakResponses enabled, pipe through StreamProcessor + VoiceQueue
+          const shouldSpeak = settings.voiceEnabled && voiceAgentRef.current && settings.speakResponses;
+          console.log('[PIPELINE] Text path — shouldSpeak:', shouldSpeak);
+
+          let ttsProcessor: StreamProcessor | null = null;
+          let ttsQueue: VoiceQueue | null = null;
+          let resolveTtsDone: (() => void) | null = null;
+          let ttsDone: Promise<void> | null = null;
+          let firstTtsSentence = false;
+
+          if (shouldSpeak) {
+            // VOX RECOVERY: Prime audio context for text-path TTS
+            if (typeof window !== 'undefined' && window.speechSynthesis) {
+              window.speechSynthesis.cancel();
+              if (window.speechSynthesis.paused) {
+                window.speechSynthesis.resume();
+              }
+              const primer = new SpeechSynthesisUtterance(' ');
+              primer.volume = 0;
+              window.speechSynthesis.speak(primer);
             }
 
-            // Render with buffer look-ahead
-            const visibleEndIndex = Math.min(i + BUFFER_SIZE, words.length);
-            const currentText = words.slice(0, visibleEndIndex).join(' ');
+            ttsProcessor = new StreamProcessor({
+              minSpeakableLength: 5,
+              clauseThreshold: 35,
+              maxBufferSize: 100,
+              splitOnNewline: true,
+            });
 
-            // Use updateMessageContent for efficient in-place update (no persist during stream)
-            await updateMessageContent(activeId, assistantMsgId, currentText, false);
+            ttsDone = new Promise<void>(r => { resolveTtsDone = r; });
 
-            // Typing speed - 150ms per word (synced with TTS estimation)
-            await new Promise((resolve) => setTimeout(resolve, 150));
+            ttsQueue = new VoiceQueue({
+              rate: modeSpeechRate,
+              lang: 'en-US',
+              cloudTtsFallback,
+              onSpeakStart: () => {
+                if (!firstTtsSentence) {
+                  firstTtsSentence = true;
+                  voiceAgentRef.current?.beginSpeaking();
+                }
+              },
+              onDrained: () => {
+                resolveTtsDone?.();
+                (window as any).__voxVowelIntensity = 0;
+              },
+              onWordBoundary: (word) => {
+                const vowels = (word.match(/[aeiouAEIOU]/g) || []).length;
+                (window as any).__voxVowelIntensity = Math.min(vowels / 3, 1);
+              },
+            });
           }
+
+          let textLocaleDetected = false;
+
+          try {
+            aiResponse = await chatService.streamResponse(
+              text,
+              history,
+              (chunk) => {
+                if (!firstChunkReceived) {
+                  firstChunkReceived = true;
+                  setIsThinking(false);
+                }
+                accumulatedText += chunk;
+
+                // AGENT 2: Incremental rendering — update bubble word-by-word as chunks arrive
+                updateMessageContent(activeId, assistantMsgId, accumulatedText, false);
+
+                // World-Wide Vox: Detect locale from first ~50 chars of response
+                if (!textLocaleDetected && accumulatedText.length >= 50 && ttsQueue) {
+                  textLocaleDetected = true;
+                  const { locale } = detectLocale(accumulatedText);
+                  if (locale !== 'en-US') {
+                    console.log('[PIPELINE] 🌍 Text path locale detected:', locale);
+                    ttsQueue.updateConfig({ lang: locale });
+                  }
+                }
+
+                // AGENT 3: Parallel TTS — pipe text to speech without blocking text display
+                if (shouldSpeak && ttsProcessor && ttsQueue) {
+                  const { segments } = ttsProcessor.processChunk(chunk);
+                  for (const seg of segments) {
+                    console.log('[PIPELINE] 🔊 Enqueuing sentence (text):', seg.text.substring(0, 50));
+                    ttsQueue.enqueue(seg.text);
+                  }
+                }
+              },
+              streamAbort.signal,
+              settings.activeMode,
+            );
+          } catch (err) {
+            ttsQueue?.destroy();
+            ttsProcessor?.reset();
+            streamAbortRef.current = null;
+            throw err;
+          }
+
+          // If isThinking never got cleared (empty response edge case)
+          if (!firstChunkReceived) {
+            setIsThinking(false);
+          }
+
+          // Flush TTS buffer and wait for speech to finish
+          if (shouldSpeak && ttsProcessor && ttsQueue) {
+            const lastSeg = ttsProcessor.flush();
+            if (lastSeg) {
+              console.log('[PIPELINE] 🔊 Flushing last segment (text):', lastSeg.text.substring(0, 50));
+              ttsQueue.enqueue(lastSeg.text);
+            }
+            ttsQueue.markStreamComplete();
+            await ttsDone;
+            ttsQueue.destroy();
+            ttsProcessor.reset();
+            console.log('[PIPELINE] ✅ Text path TTS complete — calling finishSpeaking');
+            voiceAgentRef.current?.finishSpeaking();
+          }
+
+          streamAbortRef.current = null;
+
+          // Setup sync engine
+          setActiveSyncText(aiResponse);
+          setActiveSyncMessageId(assistantMsgId);
         }
 
-        // Clear sync state
+        // ========================================
+        // STEP 7: CLEAR SYNC + FINAL PERSISTENCE
+        // ========================================
         setActiveSyncText('');
         setActiveSyncMessageId(null);
 
-        // Clear column reveal after animation completes (~700ms)
-        if (useInstantReveal) {
-          setTimeout(() => setColumnRevealMessageId(null), 700);
-        }
-
-        // ========================================
-        // STEP 7: FINAL PERSISTENCE WITH ANALYTICS
-        // ========================================
-        // 2026 Analytics: Stop latency timer and capture response time
         const latency = stopLatencyTimer(userMsgId);
-
-        // Update with complete response, latency, AND persist
         await updateMessageContent(activeId, assistantMsgId, aiResponse, true, latency || undefined);
 
-        // 2026 Analytics: Update conversation-level analytics
         if (updateConversationWithAnalytics) {
           await updateConversationWithAnalytics(activeId, latency || undefined);
         }
 
-        // Reset text input state
+        // ========================================
+        // STEP 7b: SEMANTIC TITLE GENERATION
+        // ========================================
+        // Fire after first exchange (conversation had 0 msgs before this send)
+        // Non-blocking: runs in background, updates sidebar when ready
+        if (history.length === 0 && aiResponse) {
+          chatService.generateTitle(text, aiResponse).then((title) => {
+            if (title && title !== 'Chat') {
+              renameConversation(activeId, title);
+            }
+          }).catch(() => {}); // swallow — title is non-critical
+        }
+
         if (isTextFlow) {
           setIsTextInputActive(false);
         }
@@ -344,7 +617,28 @@ export const useAppLogic = () => {
         // 2026 Analytics: Cancel latency timer on error
         cancelLatencyTimer(userMsgId);
 
+        // AbortError from barge-in is intentional — suppress silently
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          console.log('[PIPELINE] Stream aborted (barge-in) — suppressed');
+          intentionalAbortRef.current = false;
+          releasePipelineLock(operationId);
+          if (isTextFlow) setIsTextInputActive(false);
+          return false;
+        }
+
         const message = error instanceof Error ? error.message : 'Failed to get response';
+
+        // For voice flow: auto-restart listening after error instead of killing the loop
+        if (isVoiceFlow && voiceAgentRef.current) {
+          console.warn('[PIPELINE] Voice flow error, scheduling auto-recovery:', message);
+          // Don't show error to user for transient failures — just restart listening
+          setTimeout(() => {
+            if (voiceAgentRef.current) {
+              voiceAgentRef.current.setError(null);
+            }
+          }, 2000);
+        }
+
         voiceAgentRef.current?.setError(message);
 
         // Save failed message for retry
@@ -366,8 +660,11 @@ export const useAppLogic = () => {
       currentId,
       createConversation,
       addMessage,
+      renameConversation,
       settings.voiceEnabled,
       settings.speakResponses,
+      settings.speechRate,
+      settings.activeMode,
       textInputFailed,
       isHydrationReady,
       acquirePipelineLock,
@@ -396,6 +693,15 @@ export const useAppLogic = () => {
     [inputText, sendMessage]
   );
 
+  // Explicit barge-in handler: abort stream when user interrupts
+  const handleInterrupt = useCallback(() => {
+    if (streamAbortRef.current) {
+      intentionalAbortRef.current = true;
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+  }, []);
+
   // Voice agent with state machine and sync integration
   const voiceAgent = useVoiceAgent({
     settings,
@@ -403,12 +709,15 @@ export const useAppLogic = () => {
     onResponseStart: () => setIsThinking(true),
     onResponseComplete: (text) => handleSend(text, 'voice'),
     onSyncWordChange: handleSyncWordChange,
+    onInterrupt: handleInterrupt,
   });
 
   // Keep ref in sync with voiceAgent methods
   useEffect(() => {
     voiceAgentRef.current = {
       speak: voiceAgent.speak,
+      beginSpeaking: voiceAgent.beginSpeaking,
+      finishSpeaking: voiceAgent.finishSpeaking,
       setError: voiceAgent.setError,
       isSpeaking: voiceAgent.isSpeaking,
       wordsBuffer: voiceAgent.wordsBuffer,
@@ -416,11 +725,28 @@ export const useAppLogic = () => {
     };
   }, [
     voiceAgent.speak,
+    voiceAgent.beginSpeaking,
+    voiceAgent.finishSpeaking,
     voiceAgent.setError,
     voiceAgent.isSpeaking,
     voiceAgent.wordsBuffer,
     voiceAgent.currentSpokenWordIndex,
   ]);
+
+  // Abort streaming fetch ONLY on explicit barge-in interrupt
+  // Normal idle transitions (from finishSpeaking) must NOT abort — stream is already done
+  useEffect(() => {
+    if (voiceAgent.state === 'error') {
+      // Error state: abort any active stream
+      if (streamAbortRef.current) {
+        intentionalAbortRef.current = true;
+        streamAbortRef.current.abort();
+        streamAbortRef.current = null;
+      }
+    }
+    // idle state: DON'T abort — the voice pipeline manages its own lifecycle
+    // streamAbortRef is cleared to null in the normal flow before finishSpeaking()
+  }, [voiceAgent.state]);
 
   // 2026: Build sync state for active speaking message
   const getSyncStateForMessage = useCallback(
@@ -572,6 +898,8 @@ export const useAppLogic = () => {
     getSyncStateForMessage,
     // 2026: Column reveal animation (when speakResponses is OFF)
     columnRevealMessageId,
+    // Zero-Wait Engine: Live transcript for real-time user bubble
+    liveTranscript,
     // 2026: State integrity exports
     isHydrationReady,
     hydrationState,

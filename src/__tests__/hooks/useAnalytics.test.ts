@@ -246,30 +246,24 @@ describe('useAnalytics hook', () => {
       isPinned: false,
     };
 
-    let updated: Conversation | null = null;
-    act(() => {
-      updated = result.current.updateConversationAnalytics(conversation, 200);
-    });
+    const updated = result.current.updateConversationAnalytics(conversation, 200);
 
-    expect(updated?.analytics).toBeDefined();
-    expect(updated?.analytics?.averageLatency).toBe(150);
+    expect(updated.analytics).toBeDefined();
+    expect(updated.analytics?.averageLatency).toBe(150);
   });
 
   it('should create analytics message', () => {
     const { result } = renderHook(() => useAnalytics());
 
-    let message: Message | null = null;
-    act(() => {
-      message = result.current.createAnalyticsMessage(
-        { id: '1', role: 'user', content: 'Test', timestamp: 0 },
-        'typed',
-        100
-      );
-    });
+    const message = result.current.createAnalyticsMessage(
+      { id: '1', role: 'user', content: 'Test', timestamp: 0 },
+      'typed',
+      100
+    );
 
-    expect(message?.source).toBe('typed');
-    expect(message?.latency).toBe(100);
-    expect(message?.createdAt).toBeDefined();
+    expect(message.source).toBe('typed');
+    expect(message.latency).toBe(100);
+    expect(message.createdAt).toBeDefined();
   });
 
   it('should handle multiple concurrent timers', () => {

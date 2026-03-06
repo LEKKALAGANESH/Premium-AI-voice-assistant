@@ -240,7 +240,7 @@ const VoiceTranslatorInner = memo(function VoiceTranslatorInner({
       )}
     >
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-800">
+      <header className="flex items-center justify-between px-4 py-3 vox-translator-gradient-header">
         <div className="flex items-center gap-3">
           {onBack && (
             <button
@@ -446,6 +446,27 @@ const VoiceTranslatorInner = memo(function VoiceTranslatorInner({
             )}
           </AnimatePresence>
         </div>
+
+        {/* Thinking pulse animation during translation */}
+        <AnimatePresence>
+          {manager.state === 'processing' && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="px-4 pt-3 flex justify-center"
+            >
+              <div className="vox-thinking-pulse">
+                <div className="vox-thinking-dot" />
+                <div className="vox-thinking-dot" />
+                <div className="vox-thinking-dot" />
+                <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400 ml-1">
+                  Translating...
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Translation history with aria-live */}
         <div className="flex-1 overflow-hidden">

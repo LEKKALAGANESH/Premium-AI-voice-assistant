@@ -20,7 +20,6 @@ export interface KeyboardShortcutsConfig {
   onToggleSidebar?: () => void;
   onToggleFocusMode?: () => void;
   onOpenSearch?: () => void;
-  onOpenTranslator?: () => void;
   onToggleSpeakResponses?: () => void;
   // Flags to disable specific shortcuts
   disabled?: {
@@ -29,7 +28,6 @@ export interface KeyboardShortcutsConfig {
     sidebar?: boolean;
     focusMode?: boolean;
     search?: boolean;
-    translator?: boolean;
     speakResponses?: boolean;
   };
 }
@@ -57,7 +55,6 @@ export const SHORTCUTS = {
   TOGGLE_SIDEBAR: { key: 'b', ctrl: true, display: () => formatShortcut('b', true) },
   FOCUS_MODE: { key: '.', ctrl: true, display: () => formatShortcut('.', true) },
   SEARCH: { key: 'k', ctrl: true, display: () => formatShortcut('k', true) },
-  TRANSLATOR: { key: 't', ctrl: true, shift: true, display: () => formatShortcut('t', true, true) },
   SPEAK_RESPONSES: { key: 'm', ctrl: true, display: () => formatShortcut('m', true) },
 } as const;
 
@@ -68,7 +65,6 @@ export function useKeyboardShortcuts(config: KeyboardShortcutsConfig) {
     onToggleSidebar,
     onToggleFocusMode,
     onOpenSearch,
-    onOpenTranslator,
     onToggleSpeakResponses,
     disabled = {},
   } = config;
@@ -111,21 +107,13 @@ export function useKeyboardShortcuts(config: KeyboardShortcutsConfig) {
       disabled: disabled.search || !onOpenSearch,
     },
     {
-      key: 't',
-      ctrl: true,
-      shift: true,
-      action: () => onOpenTranslator?.(),
-      description: 'Open Translator',
-      disabled: disabled.translator || !onOpenTranslator,
-    },
-    {
       key: 'm',
       ctrl: true,
       action: () => onToggleSpeakResponses?.(),
       description: 'Toggle Speak Responses',
       disabled: disabled.speakResponses || !onToggleSpeakResponses,
     },
-  ], [onNewChat, onOpenSettings, onToggleSidebar, onToggleFocusMode, onOpenSearch, onOpenTranslator, onToggleSpeakResponses, disabled]);
+  ], [onNewChat, onOpenSettings, onToggleSidebar, onToggleFocusMode, onOpenSearch, onToggleSpeakResponses, disabled]);
 
   // Check if event target is an input element
   const isInputElement = useCallback((target: EventTarget | null): boolean => {

@@ -15,8 +15,34 @@
 import React, { useCallback, useId, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx } from 'clsx';
-import { Mic, Square, Loader2, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Square, Loader2, RotateCcw, AlertTriangle } from 'lucide-react';
 import { VoiceState } from '../types';
+import FrequencyVisualizer from './FrequencyVisualizer';
+import MicroExpression from './MicroExpression';
+
+// === BRAIN-PULSE ICON: Represents unified intelligent voice bot ===
+const BrainPulseIcon: React.FC<{ className?: string }> = ({ className }) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={2}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+  >
+    {/* Brain outline (left hemisphere) */}
+    <path d="M9.5 2a3.5 3.5 0 0 0-3.4 4.3A3 3 0 0 0 5 9.5a3 3 0 0 0 1.1 5.7A3.5 3.5 0 0 0 9.5 18h.5" />
+    {/* Brain outline (right hemisphere) */}
+    <path d="M14.5 2a3.5 3.5 0 0 1 3.4 4.3A3 3 0 0 1 19 9.5a3 3 0 0 1-1.1 5.7 3.5 3.5 0 0 1-3.4 2.8h-.5" />
+    {/* Center pulse line */}
+    <path d="M12 2v4l-1 2 2 3-1 2v5" />
+    {/* Audio wave lines at bottom */}
+    <path d="M8 21h8" strokeWidth={1.5} />
+    <path d="M6.5 21.5c0-1.5 1.2-2 2-2.5" strokeWidth={0} />
+  </svg>
+);
 
 // === ANIMATION CONFIGURATION ===
 
@@ -200,6 +226,8 @@ interface AICoreButtonProps {
   disabled?: boolean;
   hasRetry?: boolean;
   onRetry?: () => void;
+  detectedLang?: string;
+  isConversationActive?: boolean;
 }
 
 const AICoreButton: React.FC<AICoreButtonProps> = ({
@@ -211,6 +239,8 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
   disabled,
   hasRetry,
   onRetry,
+  detectedLang,
+  isConversationActive,
 }) => {
   const buttonId = useId();
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -291,37 +321,58 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
     [onClick, state, hasRetry, onRetry]
   );
 
-  // Button background color
+  // Button background color — Premium Polish palette
   const buttonBgClass = useMemo(() => {
     if (isError) return 'bg-red-500 hover:bg-red-600';
-    if (isListening) return 'bg-brand-500 hover:bg-brand-600';
-    if (isSpeaking) return 'bg-emerald-500 hover:bg-emerald-600';
+    if (isListening) return 'bg-orange-500 hover:bg-orange-600';
+    if (isSpeaking) return 'bg-indigo-500 hover:bg-indigo-600';
     if (isProcessing) return 'bg-amber-500 hover:bg-amber-600';
-    return 'bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700';
+    return 'vox-mini-orb hover:brightness-95';
   }, [isError, isListening, isSpeaking, isProcessing]);
 
-  // Icon color
+  // Icon color — indigo for idle (Neural Orb), white for active states
   const iconColorClass = useMemo(() => {
-    if (isIdle) return 'text-zinc-600 dark:text-zinc-300';
+    if (isIdle) return 'text-indigo-500 dark:text-indigo-400';
     return 'text-white';
   }, [isIdle]);
 
-  // Wave bar colors
+  // Wave bar colors — Premium Polish: coral for listening, indigo for speaking
   const waveBarColor = useMemo(() => {
-    if (isListening) return 'bg-brand-400 dark:bg-brand-300';
-    if (isSpeaking) return 'bg-emerald-400 dark:bg-emerald-300';
+    if (isListening) return 'bg-orange-300 dark:bg-orange-200';
+    if (isSpeaking) return 'bg-indigo-300 dark:bg-indigo-200';
     return 'bg-zinc-400';
   }, [isListening, isSpeaking]);
 
-  // Pulse ring colors
+  // Pulse ring colors — coral for listening, indigo for speaking
   const pulseRingColor = useMemo(() => {
-    if (isListening) return 'bg-brand-500/30 dark:bg-brand-400/30';
-    if (isSpeaking) return 'bg-emerald-500/30 dark:bg-emerald-400/30';
+    if (isListening) return 'bg-orange-500/30 dark:bg-orange-400/30';
+    if (isSpeaking) return 'bg-indigo-500/30 dark:bg-indigo-400/30';
     return 'bg-zinc-400/30';
   }, [isListening, isSpeaking]);
 
   return (
-    <div className="relative flex items-center justify-center shrink-0 group">
+    <div className="relative flex flex-col items-center justify-center shrink-0 group">
+      {/* Frequency Visualizer (behind button) */}
+      <AnimatePresence>
+        {isActive && (
+          <motion.div
+            className="absolute pointer-events-none"
+            initial={{ opacity: 0, scale: 0.6 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.6 }}
+            transition={{ duration: 0.3 }}
+            style={{ zIndex: -1 }}
+          >
+            <FrequencyVisualizer
+              state={state}
+              detectedLang={detectedLang}
+              size={80}
+              barCount={24}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Tooltip */}
       <div
         role="tooltip"
@@ -394,12 +445,12 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
                 animate={idleBreathingConfig}
                 transition={idleBreathingTransition}
               >
-                <Mic className={clsx('w-5 h-5', iconColorClass)} />
+                <BrainPulseIcon className={clsx('w-5 h-5', iconColorClass)} />
               </motion.div>
             </motion.div>
           )}
 
-          {/* LISTENING: Stop button (■) - clearly visible */}
+          {/* LISTENING: Bento-style visualizer bars (coral) */}
           {isListening && (
             <motion.div
               key="listening"
@@ -412,12 +463,17 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
                 animate={listeningPulseConfig}
                 transition={listeningPulseTransition}
               >
-                <Square className="w-5 h-5 text-white fill-white" />
+                <div className="vox-bento-bars" aria-hidden="true">
+                  <div className="vox-bento-bar" />
+                  <div className="vox-bento-bar" />
+                  <div className="vox-bento-bar" />
+                  <div className="vox-bento-bar" />
+                </div>
               </motion.div>
             </motion.div>
           )}
 
-          {/* SPEAKING: Stop button (■) */}
+          {/* SPEAKING: Siri-style wave (indigo) */}
           {isSpeaking && (
             <motion.div
               key="speaking"
@@ -426,18 +482,29 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
               exit={{ opacity: 0, scale: 0.5 }}
               transition={springTransition}
             >
-              <motion.div
-                animate={{
-                  scale: [1, 1.1, 1],
-                }}
-                transition={{
-                  duration: 0.6,
-                  repeat: Infinity,
-                  ease: 'easeInOut',
-                }}
-              >
-                <Square className="w-5 h-5 text-white fill-white" />
-              </motion.div>
+              <div className="vox-siri-wave" aria-hidden="true">
+                <svg
+                  viewBox="0 0 96 18"
+                  width="96"
+                  height="18"
+                  className="vox-siri-wave-path"
+                  fill="none"
+                >
+                  <path
+                    d="M0 9 Q6 3 12 9 Q18 15 24 9 Q30 3 36 9 Q42 15 48 9 Q54 3 60 9 Q66 15 72 9 Q78 3 84 9 Q90 15 96 9"
+                    stroke="rgba(255,255,255,0.85)"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M0 9 Q6 5 12 9 Q18 13 24 9 Q30 5 36 9 Q42 13 48 9 Q54 5 60 9 Q66 13 72 9 Q78 5 84 9 Q90 13 96 9"
+                    stroke="rgba(255,255,255,0.35)"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    transform="translate(0, 2)"
+                  />
+                </svg>
+              </div>
             </motion.div>
           )}
 
@@ -510,7 +577,7 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
         <motion.div
           className={clsx(
             'absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white dark:border-zinc-900',
-            isListening ? 'bg-red-500' : 'bg-red-500'
+            isListening ? 'bg-orange-500' : 'bg-indigo-400'
           )}
           animate={{
             scale: [1, 1.2, 1],
@@ -522,6 +589,15 @@ const AICoreButton: React.FC<AICoreButtonProps> = ({
           }}
         />
       )}
+
+      {/* Micro-expression label */}
+      <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap">
+        <MicroExpression
+          state={state}
+          isConversationActive={isConversationActive}
+          detectedLang={detectedLang}
+        />
+      </div>
     </div>
   );
 };

@@ -62,7 +62,7 @@ const MIN_TEXT_LENGTH = 1;
 const MAX_CONTEXT_ENTRIES = 10;
 const TRANSLATION_TIMEOUT_MS = 25000; // 25 seconds
 
-const validateRequest = (body: any): { valid: boolean; error?: TranslationErrorResponse } => {
+const validateRequest = (body: Record<string, unknown>): { valid: boolean; error?: TranslationErrorResponse } => {
   const { text, sourceLanguage, targetLanguage } = body;
 
   if (!text || !sourceLanguage || !targetLanguage) {
@@ -376,10 +376,20 @@ async function translateWithRetry(
 // ============================================================================
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CRIT-4 FIX: Fail-closed CORS — require ALLOWED_ORIGINS in production
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').filter(Boolean);
+  if (allowedOrigins.length === 0) {
+    console.error("FATAL: ALLOWED_ORIGINS env var is not set. Cannot serve cross-origin requests safely.");
+    return res.status(500).json({ error: "SERVER_MISCONFIGURED", message: "CORS not configured" });
+  }
+  const requestOrigin = req.headers.origin || '';
+  if (allowedOrigins.includes(requestOrigin)) {
+    res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
 
   if (req.method === "OPTIONS") {
     return res.status(200).end();
@@ -474,11 +484,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contextEntries: validContext.length,
     });
 
-  } catch (err: any) {
-    const errorMessage = err?.message || '';
+  } catch (err: unknown) {
+    const errorMessage = err instanceof Error ? err.message : '';
+    const errorName = err instanceof Error ? err.name : '';
 
     // Timeout
-    if (errorMessage === 'TIMEOUT' || err?.name === 'AbortError') {
+    if (errorMessage === 'TIMEOUT' || errorName === 'AbortError') {
       console.error('[Translate API] Request timeout');
       return res.status(504).json(
         createErrorResponse(

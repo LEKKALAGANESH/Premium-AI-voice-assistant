@@ -1,25 +1,28 @@
 /**
  * InputActionSlot.tsx
- * 2026 Standard: Single Action Slot Architecture
+ * 2026 Standard: Single Action Slot Architecture + Integrated Mode Selector
  *
  * ARCHITECTURE RULES:
  * 1. Single 48px fixed-dimension action slot at right edge
- * 2. Conditional pivot: AI Core (empty) ↔ Send Arrow (has text)
- * 3. PROHIBITION: No position:absolute, no vertical flex columns, no simultaneous rendering
+ * 2. Conditional pivot: AI Core (empty) <-> Send Arrow (has text)
+ * 3. Mode selector: 36px fixed between textarea and action slot
  * 4. Zero-shift layout: Textarea width remains 100% stable during morph
  *
  * FLEXBOX PROTOCOL:
  * - Input wrapper: flex-row, align-items: center
  * - Textarea: flex: 1 (fills available space)
+ * - Mode Selector: fixed 36px width
  * - Action Slot: fixed 48px width/height
  */
 
-import React, { useCallback, useRef, useId } from 'react';
+import React, { useCallback, useRef, useId, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowUp } from 'lucide-react';
 import { clsx } from 'clsx';
 import { VoiceState } from '../types';
 import AICoreButton from './AICoreButton';
+import ModeSelector from './ModeSelector';
+import type { VoxMode } from '../lib/modes';
 
 // === ANIMATION CONFIG FOR SLOT MORPHING ===
 
@@ -45,11 +48,6 @@ const slotMorphTransitionIn = {
   type: 'spring' as const,
   stiffness: 500,
   damping: 30,
-};
-
-const slotMorphTransitionOut = {
-  duration: 0.15,
-  ease: 'easeOut' as const,
 };
 
 // === INTERFACES ===
@@ -78,8 +76,13 @@ interface InputActionSlotProps {
   hasRetry?: boolean;
   onRetry?: () => void;
 
-  // Live transcription
-  streamingText?: string;
+  // Language + conversation state for visualizer
+  detectedLang?: string;
+  isConversationActive?: boolean;
+
+  // Versatility Engine: Mode selector
+  activeMode?: VoxMode;
+  onModeChange?: (mode: VoxMode) => void;
 }
 
 const InputActionSlot: React.FC<InputActionSlotProps> = ({
@@ -102,14 +105,33 @@ const InputActionSlot: React.FC<InputActionSlotProps> = ({
   hasRetry = false,
   onRetry,
 
-  streamingText,
+  detectedLang,
+  isConversationActive,
+
+  activeMode = 'assistant',
+  onModeChange,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const regionId = useId();
 
+  // Brain Shift: 2-second glow on mode change
+  const [brainShiftActive, setBrainShiftActive] = useState(false);
+  const prevModeRef = useRef(activeMode);
+
+  useEffect(() => {
+    if (prevModeRef.current !== activeMode) {
+      prevModeRef.current = activeMode;
+      setBrainShiftActive(true);
+      const timer = setTimeout(() => setBrainShiftActive(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [activeMode]);
+
   // Determine which button to show: Send (has text) or AI Core (empty)
   const hasText = inputText.trim().length > 0;
   const showSendButton = hasText && !isVoiceLocked;
+  // Voice is actively engaged (listening, processing, or speaking)
+  const isVoiceActive = voiceState === 'listening' || voiceState === 'processing' || voiceState === 'speaking';
 
   // Keyboard handler for Enter to send
   const handleKeyDown = useCallback(
@@ -131,34 +153,27 @@ const InputActionSlot: React.FC<InputActionSlotProps> = ({
     target.style.height = `${Math.min(target.scrollHeight, 120)}px`;
   }, []);
 
-  // Dynamic placeholder based on state
-  const dynamicPlaceholder = isVoiceLocked
-    ? 'Voice active...'
-    : voiceState === 'speaking'
-    ? 'AI speaking...'
-    : placeholder;
-
   return (
     <div className="vox-input-container-golden">
-      {/* WCAG 2.2 - Aria-live region for streaming text */}
+      {/* WCAG 2.2 - Aria-live region */}
       <div
         id={regionId}
         aria-live="polite"
         aria-atomic="false"
         className="sr-only"
-      >
-        {streamingText && `Transcribing: ${streamingText}`}
-      </div>
+      />
 
       {/*
         MAIN INPUT WRAPPER
-        Flexbox Protocol: flex-row, align-items: center
-        Zero-shift guarantee: Textarea flex:1, Action Slot fixed 48px
+        Flexbox: [ Textarea (flex:1) | ModeSelector (36px) | ActionSlot (48px) ]
+        Brain Shift: green glow ring on mode change for 2s
       */}
       <div
         className={clsx(
           'vox-unified-input flex flex-row items-center transition-all',
-          isVoiceLocked && 'ring-2 ring-brand-500/30'
+          isVoiceLocked && 'ring-2 ring-brand-500/30',
+          isVoiceActive && 'voice-active',
+          brainShiftActive && 'vox-brain-shift'
         )}
         style={{
           gap: 'var(--vox-space-2)',
@@ -168,31 +183,15 @@ const InputActionSlot: React.FC<InputActionSlotProps> = ({
         {/*
           TEXTAREA ZONE
           flex: 1 - Occupies all available horizontal space
-          Width remains 100% stable regardless of action slot content
         */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Live transcription preview */}
-          {streamingText && (
-            <div
-              className="text-zinc-400 italic vox-text-sm truncate"
-              style={{
-                padding: 'var(--vox-space-2) var(--vox-space-3) 0',
-                fontSize: 'var(--vox-text-sm)',
-              }}
-              aria-live="polite"
-            >
-              <span className="animate-pulse">{streamingText}</span>
-            </div>
-          )}
-
-          {/* Textarea - Independent text thread */}
+        <div className="vox-textarea-zone flex-1 flex flex-col min-w-0">
           <textarea
             ref={textareaRef}
             value={inputText}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={handleKeyDown}
             onInput={handleInput}
-            placeholder={dynamicPlaceholder}
+            placeholder={placeholder}
             disabled={isVoiceLocked || disabled}
             aria-label="Message input"
             aria-describedby={regionId}
@@ -211,17 +210,27 @@ const InputActionSlot: React.FC<InputActionSlotProps> = ({
         </div>
 
         {/*
+          MODE SELECTOR
+          Fixed 36px - shows current mode icon, opens dropdown on tap
+        */}
+        {onModeChange && (
+          <ModeSelector
+            activeMode={activeMode}
+            onModeChange={onModeChange}
+            disabled={disabled || isVoiceLocked}
+          />
+        )}
+
+        {/*
           ACTION SLOT
           Fixed 48px x 48px container
           Single button at a time - conditional pivot via AnimatePresence
-
-          PROHIBITION COMPLIANCE:
-          - No position: absolute
-          - No vertical flex column
-          - No simultaneous button rendering
         */}
         <div
-          className="flex items-center justify-center shrink-0"
+          className={clsx(
+            'vox-action-slot flex items-center justify-center shrink-0',
+            isVoiceActive && 'vox-core-glow rounded-full'
+          )}
           style={{
             width: '48px',
             height: '48px',
@@ -273,6 +282,8 @@ const InputActionSlot: React.FC<InputActionSlotProps> = ({
                   disabled={disabled}
                   hasRetry={hasRetry}
                   onRetry={onRetry}
+                  detectedLang={detectedLang}
+                  isConversationActive={isConversationActive}
                 />
               </motion.div>
             )}

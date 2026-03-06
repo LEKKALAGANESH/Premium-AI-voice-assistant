@@ -62,19 +62,21 @@ export class VoiceService {
   private isCleaningUp: boolean = false; // Guard against recursive cleanup
 
   constructor() {
-    const SpeechRecognition =
-      (window as unknown as { webkitSpeechRecognition: typeof SpeechRecognition })
-        .webkitSpeechRecognition ||
-      (window as unknown as { SpeechRecognition: typeof SpeechRecognition }).SpeechRecognition;
+    const SpeechRecognitionCtor: typeof globalThis.SpeechRecognition | undefined =
+      (window as unknown as { webkitSpeechRecognition?: typeof globalThis.SpeechRecognition })
+        .webkitSpeechRecognition ??
+      (window as unknown as { SpeechRecognition?: typeof globalThis.SpeechRecognition }).SpeechRecognition;
 
-    if (SpeechRecognition) {
-      this.recognition = new SpeechRecognition();
+    if (SpeechRecognitionCtor) {
+      this.recognition = new SpeechRecognitionCtor();
       if (this.recognition) {
         this.recognition.continuous = true;
         this.recognition.interimResults = true;
-        this.recognition.lang = 'en-US';
+        // Language-agnostic: use browser default for auto-detection
+        // Most browsers default to the system language, enabling multilingual capture
+        this.recognition.lang = '';
         // maxAlternatives is supported but may not be in all type definitions
-        (this.recognition as any).maxAlternatives = 1;
+        (this.recognition as any).maxAlternatives = 3;
       }
     }
   }

@@ -17,6 +17,11 @@ interface TranslationBubbleProps {
   index: number;
 }
 
+/** Extract short language tag from code like "te-IN" -> "TE" */
+function getLangTag(code: string): string {
+  return code.split('-')[0].toUpperCase();
+}
+
 /**
  * Individual translation bubble component
  */
@@ -82,17 +87,23 @@ const TranslationBubble = memo(function TranslationBubble({
           'text-zinc-600 dark:text-zinc-400'
         )}
       >
-        <span className="text-xs font-medium text-zinc-400 dark:text-zinc-500 block mb-1">
-          Original ({entry.originalLanguage}):
-        </span>
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className={clsx('vox-lang-badge', isPersonA ? 'badge-blue' : 'badge-emerald')}>
+            {getLangTag(entry.originalLanguage)}
+          </span>
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">Original</span>
+        </div>
         {entry.originalText}
       </div>
 
       {/* Translated text (prominent) */}
       <div className="text-zinc-900 dark:text-zinc-100 font-medium">
-        <span className="text-xs font-medium text-zinc-400 dark:text-zinc-500 block mb-1">
-          Translation ({entry.targetLanguage}):
-        </span>
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className={clsx('vox-lang-badge', isPersonA ? 'badge-emerald' : 'badge-blue')}>
+            {getLangTag(entry.targetLanguage)}
+          </span>
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">Translation</span>
+        </div>
         {entry.translatedText}
       </div>
 

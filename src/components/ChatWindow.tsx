@@ -5,11 +5,13 @@ import React, { useRef, useEffect, useCallback, useId } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { Message, VoiceState, FailedMessage } from '../types';
 import MessageBubble from './MessageBubble';
-import { Mic, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Mic, RotateCcw, AlertTriangle, Square, Sparkles } from 'lucide-react';
+import SuggestionMatrix from './SuggestionMatrix';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx } from 'clsx';
 
 import InputActionSlot from './InputActionSlot';
+import type { VoxMode } from '../lib/modes';
 
 interface ChatWindowProps {
   messages: Message[];
@@ -28,6 +30,12 @@ interface ChatWindowProps {
     // 2026: Smart-Silence capture props
     silenceProgress?: number;
     isSilenceCountdown?: boolean;
+    // Language + conversation state for visualizer
+    detectedLang?: string;
+    isConversationActive?: boolean;
+    // Auto-Resume Engine
+    endConversation?: () => void;
+    keepAliveActive?: boolean;
   };
   isThinking: boolean;
   inputText: string;
@@ -40,6 +48,11 @@ interface ChatWindowProps {
   focusMode?: boolean;
   // 2026: Column reveal animation for instant text display (when speakResponses is OFF)
   columnRevealMessageId?: string | null;
+  // Zero-Wait Engine: Live transcript shown in real-time while user speaks
+  liveTranscript?: string;
+  // Versatility Engine: Mode switcher
+  activeMode?: VoxMode;
+  onModeChange?: (mode: VoxMode) => void;
 }
 
 const ChatWindow = ({
@@ -55,6 +68,9 @@ const ChatWindow = ({
   retryTextMessage,
   focusMode = false,
   columnRevealMessageId,
+  liveTranscript = '',
+  activeMode = 'assistant',
+  onModeChange,
 }: ChatWindowProps) => {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const regionId = useId();
@@ -72,6 +88,12 @@ const ChatWindow = ({
     // 2026: Smart-Silence capture props
     silenceProgress = 0,
     isSilenceCountdown = false,
+    // Language + conversation state for visualizer
+    detectedLang,
+    isConversationActive,
+    // Auto-Resume Engine
+    endConversation,
+    keepAliveActive = false,
   } = voiceAgent;
 
   // Auto-scroll to bottom on new messages
@@ -120,18 +142,20 @@ const ChatWindow = ({
       {/* === MESSAGE SCROLL AREA === */}
       <div className="vox-message-scroll">
         {messages.length === 0 ? (
-          /* Empty state - Welcome screen with perfect centering */
+          /* Discovery Engine: Dynamic welcome screen with context-aware suggestions */
           <div
             className="vox-welcome-center text-center"
             style={{ padding: 'var(--vox-space-4)' }}
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
+              initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
               className="vox-chat-container-golden"
             >
+              {/* Premium animated icon */}
               <div
-                className="bg-brand-500 flex items-center justify-center mx-auto rotate-3 animate-float"
+                className="vox-discovery-orb flex items-center justify-center mx-auto animate-float"
                 style={{
                   width: 'clamp(3.5rem, 5vw + 1rem, 5rem)',
                   height: 'clamp(3.5rem, 5vw + 1rem, 5rem)',
@@ -139,60 +163,33 @@ const ChatWindow = ({
                   marginBottom: 'var(--vox-space-4)',
                 }}
               >
-                <Mic
+                <Sparkles
                   className="text-white"
-                  style={{ width: 'clamp(1.75rem, 2.5vw + 0.5rem, 2.5rem)', height: 'clamp(1.75rem, 2.5vw + 0.5rem, 2.5rem)' }}
+                  style={{ width: 'clamp(1.5rem, 2vw + 0.5rem, 2rem)', height: 'clamp(1.5rem, 2vw + 0.5rem, 2rem)' }}
                   aria-hidden="true"
                 />
               </div>
+
+              {/* Premium gradient heading */}
               <h1
-                className="font-display font-bold tracking-tight vox-text-4xl"
-                style={{ fontSize: 'var(--vox-text-4xl)', marginBottom: 'var(--vox-space-3)' }}
+                className="font-display font-bold tracking-tight vox-discovery-heading"
+                style={{ fontSize: 'var(--vox-text-4xl)', marginBottom: 'var(--vox-space-2)' }}
               >
-                Welcome to <span className="text-brand-600">VoxAI</span>
+                Welcome to VoxAI
               </h1>
               <p
-                className="text-zinc-500 dark:text-zinc-400 mx-auto vox-text-lg"
-                style={{ fontSize: 'var(--vox-text-lg)', maxWidth: 'var(--vox-container-max)', marginBottom: 'var(--vox-space-6)' }}
+                className="text-zinc-400 dark:text-zinc-500 mx-auto"
+                style={{ fontSize: 'var(--vox-text-sm)', maxWidth: 'var(--vox-container-max)', marginBottom: 'var(--vox-space-6)' }}
               >
-                Your intelligent voice companion. Ask me anything or just start talking.
+                Your intelligent voice companion. Pick a suggestion or just start talking.
               </p>
 
-              {/* Suggestion buttons */}
-              <div
-                className="grid grid-cols-1 sm:grid-cols-2 w-full mx-auto"
-                style={{
-                  gap: 'var(--vox-space-3)',
-                  maxWidth: 'var(--vox-container-max)',
-                }}
-                role="group"
-                aria-label="Suggested prompts"
-              >
-                {[
-                  'Tell me a story',
-                  "How's the weather?",
-                  'Set a reminder',
-                  'Explain quantum physics',
-                ].map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    onClick={() => onSend(suggestion)}
-                    className="bg-zinc-100 dark:bg-zinc-900 text-left hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-all group focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 vox-touch-target"
-                    style={{
-                      padding: 'var(--vox-space-4)',
-                      borderRadius: 'var(--vox-radius-xl)',
-                      minHeight: 'var(--vox-touch-min)',
-                    }}
-                  >
-                    <p
-                      className="font-medium text-zinc-900 dark:text-zinc-100 group-hover:text-brand-600 transition-colors vox-text-sm"
-                      style={{ fontSize: 'var(--vox-text-sm)' }}
-                    >
-                      {suggestion}
-                    </p>
-                  </button>
-                ))}
-              </div>
+              {/* Discovery Engine: Context-aware suggestion matrix */}
+              <SuggestionMatrix
+                activeMode={activeMode}
+                onInputChange={onInputChange}
+                onSend={() => onSend()}
+              />
             </motion.div>
           </div>
         ) : (
@@ -205,17 +202,69 @@ const ChatWindow = ({
                 initialTopMostItemIndex={messages.length - 1}
                 followOutput="smooth"
                 increaseViewportBy={{ top: 200, bottom: 200 }}
-                itemContent={(_, msg) => (
+                itemContent={(index, msg) => (
                   <div className="vox-4k-compact-messages" style={{ paddingBottom: 'var(--vox-space-2)' }}>
                     <MessageBubble
                       message={msg}
                       useColumnReveal={msg.id === columnRevealMessageId}
+                      isSpeaking={state === 'speaking' && msg.role === 'assistant' && index === messages.length - 1}
+                      isStreaming={isThinking && msg.role === 'assistant' && index === messages.length - 1}
+                      activeMode={activeMode}
                     />
                   </div>
                 )}
                 className="custom-scrollbar"
                 aria-label="Message history"
               />
+
+              {/* Zero-Wait Engine: Live transcript bubble — shows what user is saying in real-time */}
+              <AnimatePresence>
+                {liveTranscript && (state === 'listening' || state === 'processing') && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.15 }}
+                    className="vox-4k-compact-messages flex justify-end"
+                    style={{ paddingBottom: 'var(--vox-space-2)' }}
+                  >
+                    <div
+                      className="bg-brand-500/90 text-white px-4 py-2.5 max-w-[80%] shadow-sm"
+                      style={{ borderRadius: 'var(--vox-radius-xl)' }}
+                    >
+                      <p className="vox-text-sm" style={{ fontSize: 'var(--vox-text-sm)' }}>
+                        {liveTranscript}
+                        <span className="inline-block w-1.5 h-4 bg-white/60 ml-1 animate-pulse align-middle" />
+                      </p>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Zero-Wait Engine: Thinking indicator — never leave the bot bubble empty */}
+              <AnimatePresence>
+                {isThinking && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                    className="vox-4k-compact-messages flex justify-start"
+                    style={{ paddingBottom: 'var(--vox-space-2)' }}
+                  >
+                    <div
+                      className="bg-zinc-100 dark:bg-zinc-800 px-4 py-3 shadow-sm"
+                      style={{ borderRadius: 'var(--vox-radius-xl)' }}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-brand-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-2 h-2 rounded-full bg-brand-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-2 h-2 rounded-full bg-brand-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         )}
@@ -286,7 +335,43 @@ const ChatWindow = ({
           )}
         </AnimatePresence>
 
-        {/* 2026 Single Action Slot Input Architecture */}
+        {/* Auto-Resume Engine: End Session button — visible when conversation loop is active */}
+        <AnimatePresence>
+          {isConversationActive && (state === 'listening' || state === 'speaking' || state === 'processing') && endConversation && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.15 }}
+              className="vox-input-container-golden flex justify-center"
+              style={{ marginBottom: 'var(--vox-space-2)' }}
+            >
+              <button
+                onClick={() => {
+                  endConversation();
+                  if (state === 'listening') stopListening();
+                  if (state === 'speaking') interrupt();
+                }}
+                className={clsx(
+                  'flex items-center text-zinc-500 dark:text-zinc-400 hover:text-red-500 dark:hover:text-red-400 transition-colors',
+                  'focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded-full',
+                  keepAliveActive && 'animate-pulse text-brand-500'
+                )}
+                style={{
+                  gap: 'var(--vox-space-1)',
+                  padding: 'var(--vox-space-1) var(--vox-space-3)',
+                  fontSize: 'var(--vox-text-xs)',
+                }}
+                aria-label="End voice session"
+              >
+                <Square className="w-3 h-3" strokeWidth={2.5} aria-hidden="true" />
+                <span>{keepAliveActive ? 'Still listening...' : 'End session'}</span>
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Single Action Slot + Integrated Mode Selector */}
         <InputActionSlot
           inputText={inputText}
           onInputChange={onInputChange}
@@ -306,7 +391,10 @@ const ChatWindow = ({
           disabled={isThinking}
           hasRetry={!!failedMessage}
           onRetry={retryFailed}
-          streamingText={streamingText}
+          detectedLang={detectedLang}
+          isConversationActive={isConversationActive}
+          activeMode={activeMode}
+          onModeChange={onModeChange}
         />
       </footer>
     </div>

@@ -114,6 +114,7 @@ const LOW_VOLUME_DURATION_THRESHOLD_S = 3;
 const DOUBLE_TALK_THRESHOLD = 0.3;
 const REACTIVATION_DELAY_MS = 300; // Delay before restarting recognition
 const NO_SPEECH_RESTART_DELAY_MS = 500; // Delay after no-speech error
+const HEARTBEAT_INTERVAL_MS = 8000; // Check recognition health every 8s
 
 // ============================================================================
 // HAPTIC FEEDBACK UTILITY
@@ -260,6 +261,10 @@ export function useVoiceManager(
 
   // Re-activation timeout ref
   const reactivationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Heartbeat: detect silently-dead recognition and restart
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastRecognitionActivityRef = useRef<number>(Date.now());
 
   // Keep refs in sync
   useEffect(() => {
@@ -949,6 +954,7 @@ export function useVoiceManager(
 
     recognition.onstart = () => {
       console.log(`[VoiceManager] Recognition started for Speaker ${speaker}`);
+      lastRecognitionActivityRef.current = Date.now();
       setState(speaker === 'A' ? 'listening_a' : 'listening_b');
       setCurrentSpeaker(speaker);
       currentSpeakerRef.current = speaker;
@@ -959,6 +965,7 @@ export function useVoiceManager(
     };
 
     recognition.onresult = (event: any) => {
+      lastRecognitionActivityRef.current = Date.now();
       if (isMicLockedRef.current) {
         console.log('[VoiceManager] Ignoring result - mic locked');
         return;
@@ -1113,6 +1120,23 @@ export function useVoiceManager(
       // Start the recursive loop
       startListening('A');
 
+      // Start heartbeat to detect silently-dead recognition
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      lastRecognitionActivityRef.current = Date.now();
+      heartbeatRef.current = setInterval(() => {
+        const elapsed = Date.now() - lastRecognitionActivityRef.current;
+        if (
+          elapsed > HEARTBEAT_INTERVAL_MS &&
+          shouldContinueRef.current &&
+          !isProcessingRef.current &&
+          !isBotSpeakingRef.current &&
+          !isMicLockedRef.current
+        ) {
+          console.log('[VoiceManager] Heartbeat: recognition appears dead, restarting...');
+          startListeningRef.current(currentSpeakerRef.current || 'A');
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+
       triggerHapticFeedback('success');
       console.log('[VoiceManager] Session started successfully');
     } catch (err) {
@@ -1142,6 +1166,12 @@ export function useVoiceManager(
     console.log('[VoiceManager] Stopping session');
 
     shouldContinueRef.current = false;
+
+    // Clear heartbeat
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
 
     // Clear reactivation timeout
     if (reactivationTimeoutRef.current) {
@@ -1198,7 +1228,11 @@ export function useVoiceManager(
     operationTokenRef.current += 100;
     shouldContinueRef.current = false;
 
-    // Clear all timeouts
+    // Clear all timeouts and heartbeat
+    if (heartbeatRef.current) {
+      clearInterval(heartbeatRef.current);
+      heartbeatRef.current = null;
+    }
     if (reactivationTimeoutRef.current) {
       clearTimeout(reactivationTimeoutRef.current);
       reactivationTimeoutRef.current = null;

@@ -1,45 +1,44 @@
 // 2026 Pro-Active Voice UX: Voice Agent with State Machine Pattern
 // REFACTORED: Surgical Lifecycle Repair - Fixed Infinite Cleanup Loop
-// Version: 2.3.0 - Root Cause Fix for Silent Bot & Dead Idle
+// Version: 2.4.0 - Loop-Back Fix for One-Shot Idle Bug
 //
 // KEY FIXES:
 // 1. useRef for VoiceService - survives re-renders, no dependency array issues
 // 2. sessionActive guard - prevents cleanup during active session
 // 3. isCleaningUp guard - prevents recursive cleanup loops
 // 4. Proper audio unlock sequence on startSession
+// 5. NEW: isConversationActive ref - keeps session alive across speak cycles
+// 6. NEW: Auto-restart recognition on utterance.onend (Loop-Back)
+// 7. NEW: Voice Unlocker on first interaction
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { VoiceState, AppSettings, FailedMessage, InputMode } from '../types';
 import { voiceService, SpeechResult } from '../services/voice';
 import { useVoiceCapture, CaptureResult, CaptureState } from './useVoiceCapture';
 import { VoxError, mapErrorToVoxError } from '../types/errors';
+import { voiceStateMachine, formatMicDuration } from '../lib/voiceStateMachine';
+import type { StateAction } from '../lib/voiceStateMachine';
 
 // ============================================================================
-// STATE MACHINE DEFINITION
+// LANGUAGE DETECTION (Lightweight heuristic for UI color theming)
 // ============================================================================
 
-type StateAction =
-  | { type: 'START_LISTENING' }
-  | { type: 'STOP_LISTENING' }
-  | { type: 'START_PROCESSING' }
-  | { type: 'START_SPEAKING' }
-  | { type: 'FINISH_SPEAKING' }
-  | { type: 'INTERRUPT' }
-  | { type: 'ERROR'; payload: string }
-  | { type: 'RESET' };
+const LANG_PATTERNS: [RegExp, string][] = [
+  [/[\u0900-\u097F]/, 'hi'],     // Hindi (Devanagari)
+  [/[\u0C00-\u0C7F]/, 'te'],     // Telugu
+  [/[\u0B80-\u0BFF]/, 'ta'],     // Tamil
+  [/[\u00C0-\u024F]/, 'fr'],     // French/Spanish accented chars (rough)
+  [/[\u4E00-\u9FFF]/, 'zh'],     // Chinese
+  [/[\u3040-\u309F\u30A0-\u30FF]/, 'ja'], // Japanese
+  [/[\uAC00-\uD7AF]/, 'ko'],     // Korean
+  [/[\u0600-\u06FF]/, 'ar'],     // Arabic
+];
 
-const STATE_TRANSITIONS: Record<VoiceState, StateAction['type'][]> = {
-  idle: ['START_LISTENING', 'START_SPEAKING', 'ERROR'],
-  listening: ['STOP_LISTENING', 'START_PROCESSING', 'INTERRUPT', 'ERROR', 'RESET'],
-  processing: ['START_SPEAKING', 'ERROR', 'RESET'],
-  speaking: ['FINISH_SPEAKING', 'INTERRUPT', 'START_LISTENING', 'ERROR'],
-  error: ['RESET', 'START_LISTENING'],
-};
-
-function formatMicDuration(seconds: number): string {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+function detectLanguageFromText(text: string): string {
+  for (const [pattern, lang] of LANG_PATTERNS) {
+    if (pattern.test(text)) return lang;
+  }
+  return 'en';
 }
 
 // ============================================================================
@@ -74,28 +73,6 @@ if (typeof window !== 'undefined') {
   initializeTTSVoices();
 }
 
-// State machine reducer
-function voiceStateMachine(state: VoiceState, action: StateAction): VoiceState {
-  const validTransitions = STATE_TRANSITIONS[state];
-
-  if (!validTransitions.includes(action.type)) {
-    console.warn(`[VoiceStateMachine] Invalid transition: ${state} -> ${action.type}`);
-    return state;
-  }
-
-  switch (action.type) {
-    case 'START_LISTENING': return 'listening';
-    case 'STOP_LISTENING': return 'processing';
-    case 'START_PROCESSING': return 'processing';
-    case 'START_SPEAKING': return 'speaking';
-    case 'FINISH_SPEAKING': return 'idle';
-    case 'INTERRUPT': return 'idle';
-    case 'ERROR': return 'error';
-    case 'RESET': return 'idle';
-    default: return state;
-  }
-}
-
 // ============================================================================
 // INTERFACES
 // ============================================================================
@@ -106,6 +83,7 @@ interface VoiceAgentProps {
   onResponseStart: () => void;
   onResponseComplete: (text: string) => void;
   onSyncWordChange?: (index: number, word: string) => void;
+  onInterrupt?: () => void;
 }
 
 interface VoiceAgentReturn {
@@ -130,10 +108,16 @@ interface VoiceAgentReturn {
   micDurationSeconds: number;
   isAudioReady: boolean;
   isTTSSpeaking: boolean;
+  isConversationActive: boolean;
+  detectedLang: string;
+  keepAliveActive: boolean;
   startListening: () => void;
   stopListening: () => void;
   speak: (text: string) => Promise<void>;
+  beginSpeaking: () => void;
+  finishSpeaking: () => void;
   interrupt: () => void;
+  endConversation: () => void;
   setError: (err: string | null, voxError?: VoxError) => void;
   setInputMode: (mode: InputMode) => void;
   retryFailed: () => void;
@@ -152,6 +136,7 @@ export const useVoiceAgent = ({
   onResponseStart,
   onResponseComplete,
   onSyncWordChange,
+  onInterrupt,
 }: VoiceAgentProps): VoiceAgentReturn => {
   // === STATE ===
   const [state, setStateRaw] = useState<VoiceState>('idle');
@@ -167,6 +152,8 @@ export const useVoiceAgent = ({
   const [micDurationSeconds, setMicDurationSeconds] = useState(0);
   const [isAudioReady, setIsAudioReady] = useState(false);
   const [isTTSSpeaking, setIsTTSSpeaking] = useState(false);
+  const [isConversationActive, setIsConversationActive] = useState(false);
+  const [detectedLang, setDetectedLang] = useState('en');
 
   // ============================================================================
   // CRITICAL FIX: useRef for lifecycle guards
@@ -186,9 +173,25 @@ export const useVoiceAgent = ({
   const settingsRef = useRef(settings);
   const onSyncWordChangeRef = useRef(onSyncWordChange);
   const activeUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const startListeningFnRef = useRef<(() => void) | null>(null);
 
-  // === SMART-SILENCE VOICE CAPTURE ===
+  // ============================================================================
+  // LOOP-BACK FIX: Conversation persistence ref
+  // This ref stays TRUE during the entire conversation session
+  // Used by utterance.onend to decide whether to auto-restart recognition
+  // ============================================================================
+  const isConversationActiveRef = useRef(false);
+  const loopBackDelayMs = 300; // Echo prevention delay before restarting mic
+  const recognitionRestartTimeoutRef = useRef<number | null>(null);
+
+  // Keep-alive: pulse heartbeat when no speech detected for 10s
+  const [keepAliveActive, setKeepAliveActive] = useState(false);
+  const keepAliveTimerRef = useRef<number | null>(null);
+
+  // === SMART-SILENCE VOICE CAPTURE (World-wide Native Language) ===
   const voiceCapture = useVoiceCapture({
+    // Dynamic language: empty = auto-detect, or use last detected language for continuity
+    lang: detectedLang === 'en' ? '' : '',  // Auto-detect for all languages
     onInterimUpdate: (text) => {
       if (!isMountedRef.current) return;
       setPartialTranscript(text);
@@ -203,6 +206,10 @@ export const useVoiceAgent = ({
         micTimerRef.current = null;
       }
       setMicDurationSeconds(0);
+
+      // Detect language from transcript for UI theming
+      const lang = detectLanguageFromText(result.transcript);
+      setDetectedLang(lang);
 
       setTranscriptConfidence(result.confidence);
       transcriptRef.current = result.transcript;
@@ -298,6 +305,30 @@ export const useVoiceAgent = ({
   const isSpeaking = useMemo(() => state === 'speaking', [state]);
   const micDuration = useMemo(() => formatMicDuration(micDurationSeconds), [micDurationSeconds]);
 
+  // Keep-alive heartbeat: pulse after 10s of silence during listening
+  useEffect(() => {
+    if (keepAliveTimerRef.current) {
+      window.clearTimeout(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = null;
+    }
+    if (state === 'listening' && isConversationActive) {
+      keepAliveTimerRef.current = window.setTimeout(() => {
+        if (isMountedRef.current) setKeepAliveActive(true);
+        // Auto-clear after 2s pulse
+        setTimeout(() => {
+          if (isMountedRef.current) setKeepAliveActive(false);
+        }, 2000);
+      }, 10000);
+    } else {
+      setKeepAliveActive(false);
+    }
+    return () => {
+      if (keepAliveTimerRef.current) {
+        window.clearTimeout(keepAliveTimerRef.current);
+      }
+    };
+  }, [state, isConversationActive]);
+
   // ============================================================================
   // MIC TIMER FUNCTIONS
   // ============================================================================
@@ -340,9 +371,14 @@ export const useVoiceAgent = ({
       const voiceServiceReady = await voiceService.initializeAudio();
       console.log('[VoiceAgent] ✅ VoiceService audio initialized:', voiceServiceReady);
 
-      // 2. Wake up speechSynthesis
+      // 2. Wake up speechSynthesis - VOICE UNLOCKER
+      // This keeps the audio channel open for the entire session
       if (typeof window !== 'undefined' && window.speechSynthesis) {
+        // VOX RECOVERY: Cancel stale speech, then resume if paused
         window.speechSynthesis.cancel();
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
 
         if (!ttsVoicesInitialized) {
           initializeTTSVoices();
@@ -360,34 +396,57 @@ export const useVoiceAgent = ({
           });
         }
 
-        // Speak a silent primer to unlock TTS
-        const primer = new SpeechSynthesisUtterance(' ');
-        primer.volume = 0.01;
-        primer.rate = 10;
+        // VOX RECOVERY: Use space ' ' — empty string '' corrupts Chrome's speech engine,
+        // causing all subsequent speaks to be silent.
+        // This MUST happen on user gesture to satisfy browser autoplay policy.
+        const unlocker = new SpeechSynthesisUtterance(' ');
+        unlocker.volume = 0.01; // Near-silent but non-zero to activate audio path
+        unlocker.rate = 10;     // Fastest to complete quickly
+        (window as any).__voiceAgentUnlocker = unlocker;
 
-        // Store globally to prevent GC
-        (window as any).__voiceAgentPrimer = primer;
+        window.speechSynthesis.speak(unlocker);
 
-        primer.onend = () => {
-          console.log('[VoiceAgent] ✅ TTS primer completed');
-          (window as any).__voiceAgentPrimer = null;
-        };
-
-        window.speechSynthesis.speak(primer);
-
-        // Wait a moment then cancel
-        await new Promise(resolve => setTimeout(resolve, 100));
-        window.speechSynthesis.cancel();
+        // VOX RECOVERY: Wait for the unlocker to complete naturally.
+        // Do NOT cancel() after — that kills the audio unlock before it takes effect.
+        await new Promise<void>(resolve => {
+          const timeout = setTimeout(() => {
+            console.log('[VoiceAgent] Voice Unlocker timeout (500ms) — proceeding');
+            resolve();
+          }, 500);
+          unlocker.onend = () => {
+            clearTimeout(timeout);
+            console.log('[VoiceAgent] ✅ Voice Unlocker completed - audio channel open');
+            (window as any).__voiceAgentUnlocker = null;
+            resolve();
+          };
+          unlocker.onerror = () => {
+            clearTimeout(timeout);
+            console.warn('[VoiceAgent] Voice Unlocker error — proceeding anyway');
+            (window as any).__voiceAgentUnlocker = null;
+            resolve();
+          };
+        });
       }
 
-      // 3. Mark session as active
+      // 3. Pre-warm API connection (Zero-Wait Engine: eliminate cold start)
+      try {
+        fetch('/api/ai/chat-stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ warmup: true }),
+        }).catch(() => {});
+      } catch {}
+
+      // 4. Mark session AND conversation as active
       sessionActiveRef.current = true;
+      isConversationActiveRef.current = true;
 
       if (isMountedRef.current) {
         setIsAudioReady(true);
+        setIsConversationActive(true);
       }
 
-      console.log('[VoiceAgent] 🎉 Audio wake-up complete!');
+      console.log('[VoiceAgent] 🎉 Audio wake-up complete! Conversation loop enabled.');
       return true;
     } catch (err) {
       console.error('[VoiceAgent] ❌ Audio wake-up failed:', err);
@@ -460,12 +519,72 @@ export const useVoiceAgent = ({
   }, [stopMicTimer, cancelAllTTS]);
 
   // ============================================================================
-  // INTERRUPT (Barge-in)
+  // STREAMING SPEECH CONTROL (Used by useAppLogic for streaming voice flow)
+  // These let the app logic drive the state machine during streaming TTS,
+  // bypassing the monolithic speak() method.
   // ============================================================================
+
+  /** Signal that streaming TTS has started (updates UI to speaking state). */
+  const beginSpeaking = useCallback(() => {
+    console.log('[VoiceAgent] 🔊 beginSpeaking — transitioning to SPEAKING state');
+    dispatch({ type: 'START_SPEAKING' });
+    speakingRef.current = true;
+    interruptedRef.current = false;
+    stopMicTimer();
+    if (isMountedRef.current) setIsTTSSpeaking(true);
+  }, [dispatch, stopMicTimer]);
+
+  /** Signal that all streaming TTS is done. Handles loop-back if active. */
+  const finishSpeaking = useCallback(() => {
+    console.log('[VoiceAgent] ✅ finishSpeaking — all TTS done, transitioning to IDLE');
+    speakingRef.current = false;
+    if (isMountedRef.current) {
+      setCurrentSpokenWordIndex(-1);
+      setWordsBuffer([]);
+      setIsTTSSpeaking(false);
+    }
+
+    dispatch({ type: 'FINISH_SPEAKING' });
+
+    if (isConversationActiveRef.current && isMountedRef.current && !interruptedRef.current) {
+      // Loop-back: echo prevention delay before restarting mic
+      if (recognitionRestartTimeoutRef.current) {
+        window.clearTimeout(recognitionRestartTimeoutRef.current);
+      }
+      recognitionRestartTimeoutRef.current = window.setTimeout(() => {
+        if (isConversationActiveRef.current && isMountedRef.current && !interruptedRef.current) {
+          startListeningFnRef.current?.();
+        }
+        recognitionRestartTimeoutRef.current = null;
+      }, loopBackDelayMs);
+    } else {
+      setInputMode('idle');
+    }
+  }, [dispatch]);
+
+  // ============================================================================
+  // INTERRUPT (Barge-in) & END CONVERSATION
+  // ============================================================================
+
+  const onInterruptRef = useRef(onInterrupt);
+  useEffect(() => { onInterruptRef.current = onInterrupt; }, [onInterrupt]);
 
   const interrupt = useCallback(() => {
     console.log('[VoiceAgent] 🛑 Interrupt triggered');
     interruptedRef.current = true;
+
+    // CRITICAL: Abort active stream in useAppLogic (barge-in)
+    onInterruptRef.current?.();
+
+    // CRITICAL: Stop the conversation loop
+    isConversationActiveRef.current = false;
+    if (isMountedRef.current) setIsConversationActive(false);
+
+    // Clear any pending restart timeout
+    if (recognitionRestartTimeoutRef.current) {
+      window.clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
 
     voiceService.stopSpeaking();
     cancelAllTTS();
@@ -473,6 +592,18 @@ export const useVoiceAgent = ({
     cleanup();
     dispatch({ type: 'INTERRUPT' });
   }, [cleanup, dispatch, cancelAllTTS, stopMicTimer]);
+
+  // End conversation without interrupting current speech
+  const endConversation = useCallback(() => {
+    console.log('[VoiceAgent] 🏁 Ending conversation loop');
+    isConversationActiveRef.current = false;
+    if (isMountedRef.current) setIsConversationActive(false);
+
+    if (recognitionRestartTimeoutRef.current) {
+      window.clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
+  }, []);
 
   // ============================================================================
   // VOICE SERVICE CALLBACKS
@@ -525,6 +656,18 @@ export const useVoiceAgent = ({
       return;
     }
 
+    // AUTO-RESUME: Activate conversation loop on first listen
+    // This enables the LISTENING → THINKING → SPEAKING → LISTENING cycle
+    if (!isConversationActiveRef.current) {
+      console.log('[VoiceAgent] 🔄 Activating conversation loop');
+      sessionActiveRef.current = true;
+      isConversationActiveRef.current = true;
+      interruptedRef.current = false;
+      if (isMountedRef.current) setIsConversationActive(true);
+      // Fire-and-forget audio priming (we're already in a user gesture context)
+      wakeUpAudio().catch(() => {});
+    }
+
     setError(null);
     transcriptRef.current = '';
     setPartialTranscript('');
@@ -532,15 +675,15 @@ export const useVoiceAgent = ({
     setTranscriptConfidence(1);
     setInputMode('voice');
 
-    // Mark session as active
-    sessionActiveRef.current = true;
-
     startMicTimer();
     voiceCapture.startCapture();
     dispatch({ type: 'START_LISTENING' });
 
     console.log('[VoiceAgent] ✅ Listening started');
-  }, [dispatch, voiceCapture, startMicTimer, cancelAllTTS, setError]);
+  }, [dispatch, voiceCapture, startMicTimer, cancelAllTTS, setError, wakeUpAudio]);
+
+  // Keep ref in sync so finishSpeaking can call startListening without circular deps
+  startListeningFnRef.current = startListening;
 
   // ============================================================================
   // STOP LISTENING
@@ -643,6 +786,30 @@ export const useVoiceAgent = ({
             if (isMountedRef.current) setIsTTSSpeaking(false);
             activeUtteranceRef.current = null;
             (window as any).__voiceAgentUtterance = null;
+
+            // ================================================================
+            // LOOP-BACK FIX: Auto-restart recognition if conversation active
+            // This is the CRITICAL fix for the One-Shot Idle bug
+            // ================================================================
+            if (isConversationActiveRef.current && !interruptedRef.current && isMountedRef.current) {
+              console.log('[VoiceAgent] 🔄 Loop-back: Scheduling recognition restart...');
+
+              // Clear any existing restart timeout
+              if (recognitionRestartTimeoutRef.current) {
+                window.clearTimeout(recognitionRestartTimeoutRef.current);
+              }
+
+              // Echo prevention delay before restarting mic
+              recognitionRestartTimeoutRef.current = window.setTimeout(() => {
+                if (isConversationActiveRef.current && isMountedRef.current && !interruptedRef.current) {
+                  console.log('[VoiceAgent] 🎤 Loop-back: Restarting recognition');
+                  // Don't resolve yet - let the loop continue
+                  // The listening will handle the next cycle
+                }
+                recognitionRestartTimeoutRef.current = null;
+              }, loopBackDelayMs);
+            }
+
             resolve();
           };
 
@@ -676,10 +843,39 @@ export const useVoiceAgent = ({
 
       // Clean finish
       if (speakingRef.current && !interruptedRef.current && isMountedRef.current) {
-        console.log('[VoiceAgent] ✅ Speech complete - transitioning to IDLE');
-        dispatch({ type: 'FINISH_SPEAKING' });
-        setInputMode('idle');
-        voiceService.stopListening();
+        console.log('[VoiceAgent] ✅ Speech complete');
+
+        // ================================================================
+        // LOOP-BACK FIX: Check if conversation should continue
+        // ================================================================
+        if (isConversationActiveRef.current) {
+          console.log('[VoiceAgent] 🔄 Conversation active - auto-restarting listening');
+
+          // Clear pending restart timeout
+          if (recognitionRestartTimeoutRef.current) {
+            window.clearTimeout(recognitionRestartTimeoutRef.current);
+            recognitionRestartTimeoutRef.current = null;
+          }
+
+          // Transition to idle momentarily, then restart
+          dispatch({ type: 'FINISH_SPEAKING' });
+
+          // Echo prevention delay before restarting microphone
+          recognitionRestartTimeoutRef.current = window.setTimeout(() => {
+            if (isConversationActiveRef.current && isMountedRef.current && !interruptedRef.current) {
+              console.log('[VoiceAgent] 🎤 Loop-back: Starting new listening cycle');
+              startListening();
+            }
+            recognitionRestartTimeoutRef.current = null;
+          }, loopBackDelayMs);
+
+        } else {
+          // No loop-back, just go to idle
+          console.log('[VoiceAgent] ⏹️ Conversation ended - transitioning to IDLE');
+          dispatch({ type: 'FINISH_SPEAKING' });
+          setInputMode('idle');
+          voiceService.stopListening();
+        }
       }
 
       if (isMountedRef.current) {
@@ -708,7 +904,7 @@ export const useVoiceAgent = ({
         setInputMode('idle');
       }
     }
-  }, [dispatch, stopMicTimer]);
+  }, [dispatch, stopMicTimer, startListening]);
 
   // ============================================================================
   // RETRY & CLEAR FAILED
@@ -761,6 +957,7 @@ export const useVoiceAgent = ({
       console.log('[VoiceAgent] 🔴 Component unmounting - final cleanup');
       isMountedRef.current = false;
       sessionActiveRef.current = false;
+      isConversationActiveRef.current = false;
 
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('blur', handleBlur);
@@ -777,6 +974,10 @@ export const useVoiceAgent = ({
         window.clearInterval(micTimerRef.current);
         micTimerRef.current = null;
       }
+      if (recognitionRestartTimeoutRef.current) {
+        window.clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
 
       // Cancel all speech
       if (typeof window !== 'undefined' && window.speechSynthesis) {
@@ -785,6 +986,7 @@ export const useVoiceAgent = ({
       activeUtteranceRef.current = null;
       (window as any).__voiceAgentUtterance = null;
       (window as any).__voiceAgentPrimer = null;
+      (window as any).__voiceAgentUnlocker = null;
 
       console.log('[VoiceAgent] ✅ Final cleanup complete');
     };
@@ -816,10 +1018,16 @@ export const useVoiceAgent = ({
     micDurationSeconds,
     isAudioReady,
     isTTSSpeaking,
+    isConversationActive,
+    detectedLang,
+    keepAliveActive,
     startListening,
     stopListening,
     speak,
+    beginSpeaking,
+    finishSpeaking,
     interrupt,
+    endConversation, // NEW: End loop without interrupting
     setError,
     setInputMode,
     retryFailed,

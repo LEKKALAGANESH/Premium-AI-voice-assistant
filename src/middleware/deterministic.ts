@@ -1,16 +1,28 @@
+// Deterministic responses — ONLY for explicit factual queries with no conversational context
+// These bypass the LLM entirely, so they must be extremely narrow triggers
+
 import { format } from 'date-fns';
 
-const TIME_KEYWORDS = ['time', 'current time', 'what time is it'];
-const DATE_KEYWORDS = ['date', 'today', 'what is the date', "today's date"];
+// Only match explicit, standalone time/date requests — not casual mentions
+const EXACT_TIME_PATTERNS = [
+  /^what(?:'s| is) the (?:current )?time\??$/i,
+  /^tell me the time\??$/i,
+  /^what time is it\??$/i,
+];
+
+const EXACT_DATE_PATTERNS = [
+  /^what(?:'s| is) (?:the |today(?:'s)? )?date\??$/i,
+  /^what is today(?:'s)? date\??$/i,
+];
 
 export const getDeterministicResponse = (input: string): string | null => {
-  const normalizedInput = input.toLowerCase().trim();
+  const trimmed = input.trim();
 
-  if (TIME_KEYWORDS.some(keyword => normalizedInput.includes(keyword))) {
-    return `The current time is ${format(new Date(), 'pp')}.`;
+  if (EXACT_TIME_PATTERNS.some(p => p.test(trimmed))) {
+    return `It's ${format(new Date(), 'p')} right now.`;
   }
 
-  if (DATE_KEYWORDS.some(keyword => normalizedInput.includes(keyword))) {
+  if (EXACT_DATE_PATTERNS.some(p => p.test(trimmed))) {
     return `Today is ${format(new Date(), 'PPPP')}.`;
   }
 

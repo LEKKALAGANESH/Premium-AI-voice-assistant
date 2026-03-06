@@ -17,6 +17,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1.0,
   // 2026 Standard: Zen Focus Mode
   focusMode: false,
+  // Versatility Engine: Default AI persona mode
+  activeMode: 'assistant',
 };
 
 // Apply UI scale to CSS custom property

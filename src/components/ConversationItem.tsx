@@ -2,14 +2,32 @@
 // Features: Pin, Inline Rename, Share (Copy/MD/TXT), Safe Delete
 // REFACTORED: Stability Overhaul - Propagation Guards & Event Isolation
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Conversation } from '../types';
-import { MoreVertical, Pin, PinOff, Pencil, Share2, Trash2, Copy, FileText, Download, Check } from 'lucide-react';
+import { MoreVertical, Pin, PinOff, Pencil, Share2, Trash2, Copy, FileText, Download, Check, Mic, Globe, BookOpen, Code, Brain, Lightbulb, MessageCircle } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 import { motion, AnimatePresence } from 'motion/react';
 import MobileActionSheet, { ActionSheetAction } from './MobileActionSheet';
 import ConfirmationModal from './ConfirmationModal';
+
+// Topic icon picker based on title keywords
+const TOPIC_ICONS: [RegExp, React.ElementType][] = [
+  [/voice|speech|speak|mic|audio|listen/i, Mic],
+  [/translat|language|bilingual|telugu|hindi|spanish|french/i, Globe],
+  [/story|tale|flicker|adventure|narrat/i, BookOpen],
+  [/code|program|develop|software|bug|api|react|python/i, Code],
+  [/ai\b|machine\s*learn|neural|model|gpt|llm/i, Brain],
+  [/idea|brainstorm|creativ|innovat/i, Lightbulb],
+];
+
+function getTopicIcon(title: string): React.ElementType | null {
+  if (title === 'New Chat') return null;
+  for (const [pattern, Icon] of TOPIC_ICONS) {
+    if (pattern.test(title)) return Icon;
+  }
+  return MessageCircle;
+}
 
 // 2026 STABILITY: Minimum touch target size (WCAG 2.2 AAA)
 const TOUCH_TARGET_MIN = '44px';
@@ -256,24 +274,30 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
   ];
 
   // Dropdown menu (portal for overflow safety)
-  const dropdownMenu = isMenuOpen && !isMobile && menuPosition && createPortal(
-    <motion.div
-      ref={menuRef}
-      initial={{ opacity: 0, scale: 0.95, y: -4 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.95, y: -4 }}
-      transition={{ duration: 0.1 }}
-      className="fixed bg-white dark:bg-zinc-900 shadow-xl vox-border-thin border-zinc-200 dark:border-zinc-800 overflow-hidden"
-      style={{
-        top: menuPosition.top,
-        left: menuPosition.left,
-        width: '11rem',
-        borderRadius: 'var(--vox-radius-xl)',
-        zIndex: 100,
-      }}
-      role="menu"
-      aria-label="Conversation actions"
-    >
+  // CRITICAL: AnimatePresence is INSIDE the portal so it can properly manage
+  // the motion.div lifecycle. Wrapping createPortal with AnimatePresence breaks
+  // exit animations and can leave stale elements in the DOM.
+  const dropdownMenu = !isMobile && createPortal(
+    <AnimatePresence>
+      {isMenuOpen && menuPosition && (
+        <motion.div
+          key="context-menu"
+          ref={menuRef}
+          initial={{ opacity: 0, scale: 0.95, y: -4 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: -4 }}
+          transition={{ duration: 0.1 }}
+          className="fixed bg-white dark:bg-zinc-900 shadow-xl vox-border-thin border-zinc-200 dark:border-zinc-800 overflow-hidden"
+          style={{
+            top: menuPosition.top,
+            left: menuPosition.left,
+            width: '11rem',
+            borderRadius: 'var(--vox-radius-xl)',
+            zIndex: 100,
+          }}
+          role="menu"
+          aria-label="Conversation actions"
+        >
       {/* Pin/Unpin */}
       <button
         onClick={() => { onPin(); onMenuClose(); }}
@@ -379,7 +403,9 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         <Trash2 style={{ width: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)', height: 'clamp(0.875rem, 1vw + 0.375rem, 1rem)' }} />
         <span className="vox-text-sm" style={{ fontSize: 'var(--vox-text-sm)' }}>Delete</span>
       </button>
-    </motion.div>,
+        </motion.div>
+      )}
+    </AnimatePresence>,
     document.body
   );
 
@@ -472,10 +498,14 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
             ) : (
               <span
                 ref={titleRef}
-                className="truncate flex-1 text-left vox-text-sm"
+                className="truncate flex-1 text-left vox-text-sm flex items-center gap-1.5"
                 style={{ fontSize: 'var(--vox-text-sm)' }}
               >
-                {conversation.title}
+                {(() => {
+                  const TopicIcon = getTopicIcon(conversation.title);
+                  return TopicIcon ? <TopicIcon className="w-3.5 h-3.5 shrink-0 text-zinc-400 dark:text-zinc-500" /> : null;
+                })()}
+                <span key={conversation.title} className="vox-title-swap">{conversation.title}</span>
               </span>
             )
           )}
@@ -535,10 +565,8 @@ const ConversationItem: React.FC<ConversationItemProps> = ({
         )}
       </div>
 
-      {/* Desktop Dropdown Menu (Portal) */}
-      <AnimatePresence>
-        {dropdownMenu}
-      </AnimatePresence>
+      {/* Desktop Dropdown Menu (Portal) — AnimatePresence is inside the portal */}
+      {dropdownMenu}
 
       {/* Title Tooltip (Portal) */}
       {titleTooltip}

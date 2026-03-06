@@ -6,9 +6,11 @@ import React, { memo, useState, useCallback, useMemo } from 'react';
 import { Message } from '../types';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { Bot, Copy, Edit2, Check, Sparkles, Mic, Clock, Zap } from 'lucide-react';
+import { Bot, Copy, Edit2, Check, Sparkles, Mic, Clock, Zap, GraduationCap, Globe, BookOpen, Code, ArrowRight } from 'lucide-react';
 import { SyncState, SyncWord } from '../hooks/useSpeechTextSync';
 import { formatMessageTime, formatLatency } from '../hooks/useAnalytics';
+import MarkdownRenderer from './MarkdownRenderer';
+import { extractActionItems, ActionCardList } from './ActionCard';
 
 // ============================================================================
 // 2026 ACCESSIBILITY: Ghost Labels for Screen Readers & Clipboard Context
@@ -43,6 +45,8 @@ interface MessageBubbleProps {
   message: Message;
   syncState?: SyncState;
   isSpeaking?: boolean;
+  isStreaming?: boolean; // Living Icon: true when this message is actively receiving chunks
+  activeMode?: string; // Living Icon: current VoxMode for dynamic iconography
   showMetadata?: boolean; // 2026 Analytics: Toggle for timestamps and performance badges
   useColumnReveal?: boolean; // 2026: Column reveal animation when speakResponses is OFF
 }
@@ -85,8 +89,17 @@ const Word = memo(({ word, state, isLastWord }: WordProps) => {
 
 Word.displayName = 'Word';
 
+// === LIVING ICON: Mode-Aware Icon Resolver ===
+const MODE_ICONS: Record<string, React.ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
+  assistant: Sparkles,
+  mentor: GraduationCap,
+  translator: Globe,
+  storyteller: BookOpen,
+  coder: Code,
+};
+
 // === MAIN COMPONENT ===
-const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetadata = true, useColumnReveal = false }: MessageBubbleProps) => {
+const MessageBubble = memo(({ message, syncState, isSpeaking = false, isStreaming = false, activeMode = 'assistant', showMetadata = true, useColumnReveal = false }: MessageBubbleProps) => {
   const isAssistant = message.role === 'assistant';
   const [copied, setCopied] = useState(false);
 
@@ -137,16 +150,77 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
         <>
           <GhostLabel>{ghostLabelText}</GhostLabel>
           <span className="vox-column-reveal">
-            {message.content}
+            <MarkdownRenderer content={message.content} />
           </span>
         </>
       );
     }
 
-    // Default: render full content without sync (includes ghost label)
+    // Skeleton: empty assistant placeholder = thinking pulse
+    if (isAssistant && message.content === '') {
+      return (
+        <div className="vox-thinking-pulse" role="status" aria-label="Thinking">
+          <div className="vox-thinking-dot" />
+          <div className="vox-thinking-dot" />
+          <div className="vox-thinking-dot" />
+        </div>
+      );
+    }
+
+    // Strict Persona: Translator mode — clean bilingual card
+    if (isAssistant && activeMode === 'translator' && message.content) {
+      return (
+        <>
+          <GhostLabel>{ghostLabelText}</GhostLabel>
+          <div className="vox-translation-card">
+            <div className="vox-translation-card-header">
+              <Globe className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
+              <span className="text-xs font-medium text-indigo-600 dark:text-indigo-400">Translation</span>
+            </div>
+            <div className="vox-translation-card-body">
+              {message.content}
+            </div>
+          </div>
+        </>
+      );
+    }
+
+    // Strict Persona: Mentor mode — response + next steps CTA
+    if (isAssistant && activeMode === 'mentor' && message.content) {
+      // Extract "Your next move:" / "Try this:" / "Challenge for you:" lines as CTA
+      const ctaPatterns = /(?:^|\n)\s*(?:\*\*)?(?:Your next move|Try this|Challenge for you|Next step|Action item)[:\s]*(?:\*\*)?\s*(.*)/i;
+      const ctaMatch = message.content.match(ctaPatterns);
+
+      return (
+        <>
+          <GhostLabel>{ghostLabelText}</GhostLabel>
+          <MarkdownRenderer content={message.content} />
+          {ctaMatch && ctaMatch[1] && (
+            <div className="vox-mentor-cta">
+              <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+              <span>{ctaMatch[1].trim()}</span>
+            </div>
+          )}
+        </>
+      );
+    }
+
+    // Assistant messages: render with Markdown formatting (bold, lists, feature cards)
+    // Elegant Interaction: extract actionable items and render as interactive cards
+    if (isAssistant) {
+      const { items: actionItems, cleanedContent } = extractActionItems(message.content);
+      return (
+        <>
+          <GhostLabel>{ghostLabelText}</GhostLabel>
+          <MarkdownRenderer content={cleanedContent} />
+          {actionItems.length > 0 && <ActionCardList items={actionItems} />}
+        </>
+      );
+    }
+
+    // User messages: render as plain text
     return (
       <>
-        {/* 2026 ACCESSIBILITY: Ghost label for context when copying */}
         <GhostLabel>{ghostLabelText}</GhostLabel>
         {message.content}
       </>
@@ -261,20 +335,40 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
       role="article"
       aria-label={`${isAssistant ? 'Assistant' : 'User'} message`}
     >
-      {/* Assistant Avatar - Fluid sizing */}
+      {/* Neural Orb: Premium State-Aware Avatar with Mode-Specific Icons */}
       {isAssistant && (
         <div
-          className="rounded-2xl bg-brand-50 dark:bg-brand-900/20 flex items-center justify-center shrink-0 vox-border-thin border-brand-100 dark:border-brand-800"
+          className={clsx(
+            'vox-neural-orb rounded-2xl flex items-center justify-center shrink-0',
+            !isStreaming && !isSpeaking && 'idle',
+            isStreaming && 'processing',
+            isSpeaking && 'speaking'
+          )}
           style={{
             width: 'clamp(2rem, 2.5vw + 1rem, 2.5rem)',
             height: 'clamp(2rem, 2.5vw + 1rem, 2.5rem)',
             borderRadius: 'var(--vox-radius-lg)',
           }}
         >
-          <Bot
-            className="text-brand-600 dark:text-brand-400"
-            style={{ width: 'clamp(1.25rem, 1.5vw + 0.5rem, 1.5rem)', height: 'clamp(1.25rem, 1.5vw + 0.5rem, 1.5rem)' }}
-          />
+          {isSpeaking ? (
+            /* Audio wave bars when speaking */
+            <div className="vox-orb-wave" aria-label="Speaking">
+              <div className="vox-orb-wave-bar" />
+              <div className="vox-orb-wave-bar" />
+              <div className="vox-orb-wave-bar" />
+            </div>
+          ) : (
+            /* Mode-aware icon (Sparkles, GraduationCap, Globe, BookOpen, Code) */
+            (() => {
+              const IconComponent = MODE_ICONS[activeMode] || Bot;
+              return (
+                <IconComponent
+                  className="vox-orb-icon text-indigo-500 dark:text-indigo-400"
+                  style={{ width: 'clamp(1.25rem, 1.5vw + 0.5rem, 1.5rem)', height: 'clamp(1.25rem, 1.5vw + 0.5rem, 1.5rem)' }}
+                />
+              );
+            })()
+          )}
         </div>
       )}
 
@@ -291,7 +385,9 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
             'relative leading-relaxed transition-all duration-300 vox-text-sm',
             isAssistant
               ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 rounded-tl-none'
-              : 'bg-brand-600 text-white rounded-tr-none'
+              : 'bg-brand-600 text-white rounded-tr-none',
+            // PILLAR 2: Speaking pulse glow on active bot bubble
+            isAssistant && isSpeaking && 'vox-speaking-glow'
           )}
           style={{
             padding: 'var(--vox-space-3) var(--vox-space-4)',
@@ -301,7 +397,9 @@ const MessageBubble = memo(({ message, syncState, isSpeaking = false, showMetada
             borderTopRightRadius: !isAssistant ? '0' : undefined,
             // Soft shadows instead of hard borders
             boxShadow: isAssistant
-              ? '0 1px 3px -1px rgba(0, 0, 0, 0.08), 0 2px 8px -2px rgba(0, 0, 0, 0.06)'
+              ? (isSpeaking
+                ? '0 0 12px -2px rgba(34, 197, 94, 0.3), 0 0 24px -4px rgba(34, 197, 94, 0.15)'
+                : '0 1px 3px -1px rgba(0, 0, 0, 0.08), 0 2px 8px -2px rgba(0, 0, 0, 0.06)')
               : '0 2px 8px -2px rgba(22, 163, 74, 0.25), 0 4px 12px -4px rgba(22, 163, 74, 0.15)',
           }}
         >

@@ -1,7 +1,10 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+// CRIT-5 FIX: Fail-fast on missing API key
+const API_KEY = process.env.GEMINI_API_KEY;
+if (!API_KEY) throw new Error("FATAL: GEMINI_API_KEY is not configured");
+const ai = new GoogleGenAI({ apiKey: API_KEY });
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === "OPTIONS") {

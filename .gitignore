@@ -26,7 +26,6 @@ coverage/
 .env.test.local
 .env.production.local
 !.env.example
-.env.example
 
 # Serverless directories
 .serverless/
@@ -88,3 +87,9 @@ pids/
 
 
 .claude
+
+.env.local
+.env.example
+
+# Documentation (specs, audits, reports)
+docs/

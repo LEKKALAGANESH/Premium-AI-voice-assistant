@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Conversation } from '../types';
-import { Menu, Search, Plus, Settings, X, ChevronRight, Languages } from 'lucide-react';
+import { Menu, Search, Plus, Settings, X, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import ConversationItem from './ConversationItem';
 import { InlineKeyboardHint, KeyboardHint } from './KeyboardHint';
@@ -22,7 +22,6 @@ interface SidebarProps {
   onPin: (id: string) => void;
   onToggle: () => void;
   onOpenSettings: () => void;
-  onOpenTranslator?: () => void;
   isMobile: boolean;
   isMobileOpen: boolean;
   onMobileClose: () => void;
@@ -104,7 +103,6 @@ const Sidebar = ({
   onPin,
   onToggle,
   onOpenSettings,
-  onOpenTranslator,
   isMobile,
   isMobileOpen,
   onMobileClose,
@@ -119,6 +117,7 @@ const Sidebar = ({
   const firstFocusableRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const handleMenuClose = useCallback(() => setOpenMenuId(null), []);
   // Support both controlled and uncontrolled search state
   const [internalSearchOpen, setInternalSearchOpen] = useState(false);
   const isSearchOpen = controlledSearchOpen ?? internalSearchOpen;
@@ -222,12 +221,6 @@ const Sidebar = ({
     setOpenMenuId(null);
     if (isMobile) onMobileClose();
   }, [onOpenSettings, isMobile, onMobileClose]);
-
-  const handleOpenTranslator = useCallback(() => {
-    onOpenTranslator?.();
-    setOpenMenuId(null);
-    if (isMobile) onMobileClose();
-  }, [onOpenTranslator, isMobile, onMobileClose]);
 
   const handleShare = useCallback((conv: Conversation, format: 'text' | 'markdown' | 'txt') => {
     const sanitizedTitle = conv.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
@@ -439,7 +432,7 @@ const Sidebar = ({
                     onShare={(format) => handleShare(conv, format)}
                     openMenuId={openMenuId}
                     onMenuOpen={setOpenMenuId}
-                    onMenuClose={() => setOpenMenuId(null)}
+                    onMenuClose={handleMenuClose}
                   />
                 ))
               ) : !searchQuery && (
@@ -509,38 +502,6 @@ const Sidebar = ({
         className="flex-shrink-0 flex flex-col"
         style={{ padding: 'var(--vox-space-3)', gap: 'var(--vox-space-1)' }}
       >
-        {/* Voice Translator Button */}
-        {onOpenTranslator && (
-          <div className="group relative">
-            <button
-              onClick={handleOpenTranslator}
-              className={`flex items-center text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-colors w-full ${
-                isCollapsedDesktop ? 'justify-center' : ''
-              }`}
-              style={{
-                gap: isCollapsedDesktop ? '0' : 'var(--vox-space-3)',
-                padding: 'var(--vox-space-3)',
-                borderRadius: 'var(--vox-radius-lg)',
-                minHeight: 'var(--vox-touch-min)',
-              }}
-              aria-label="Voice Translator"
-            >
-              <Languages style={iconSize} />
-              {showExpandedContent && (
-                <>
-                  <span className="font-medium" style={{ fontSize: 'var(--vox-text-sm)' }}>Translator</span>
-                  {shortcuts && (
-                    <InlineKeyboardHint shortcut={shortcuts.TRANSLATOR.display()} />
-                  )}
-                </>
-              )}
-            </button>
-            {isCollapsedDesktop && shortcuts && (
-              <KeyboardHint shortcut={shortcuts.TRANSLATOR.display()} position="right" />
-            )}
-          </div>
-        )}
-
         {/* Settings Button */}
         <div className="group relative">
           <button

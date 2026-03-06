@@ -9,8 +9,8 @@ import { useAppLogic } from './hooks/useAppLogic';
 
 // Code Splitting: Lazy load heavy components for better initial load
 const SettingsModal = lazy(() => import('./components/SettingsModal'));
-const VoiceTranslator = lazy(() => import('./components/VoiceTranslator').then(m => ({ default: m.VoiceTranslator })));
 import { useTitleSync } from './hooks/useTitleSync';
+import { useDynamicFavicon } from './hooks/useDynamicFavicon';
 import { useMobileSidebar } from './hooks/useMobileSidebar';
 import { useKeyboardShortcuts, SHORTCUTS } from './hooks/useKeyboardShortcuts';
 import { useErrorManager } from './hooks/useErrorManager';
@@ -20,9 +20,7 @@ import { clsx } from 'clsx';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ErrorToastContainer } from './components/ErrorToast';
-
-// App view types
-type AppView = 'chat' | 'translator';
+import type { VoxMode } from './lib/modes';
 
 export default function App() {
   const {
@@ -53,6 +51,8 @@ export default function App() {
     retryTextMessage,
     // 2026: Column reveal animation
     columnRevealMessageId,
+    // Zero-Wait Engine: Live transcript
+    liveTranscript,
   } = useAppLogic();
 
   // 2026: Mobile sidebar state management
@@ -66,19 +66,17 @@ export default function App() {
     () => updateSettings({ sidebarCollapsed: !settings.sidebarCollapsed })
   );
 
-  // 2026: Dynamic title sync with conversation name
+  // Tab-Synergy: Dynamic title + favicon sync with voice state
   useTitleSync({
     currentConversation,
     isThinking,
     voiceState: voiceAgent.state,
   });
+  useDynamicFavicon(voiceAgent.state);
 
   // 2026: Conversational search state
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-
-  // App view state for navigation between chat and translator
-  const [currentView, setCurrentView] = useState<AppView>('chat');
 
   // 2026 Premium: Global error management
   const {
@@ -116,17 +114,6 @@ export default function App() {
     updateSettings({ speakResponses: !settings.speakResponses });
   }, [settings.speakResponses, updateSettings]);
 
-  // Handle switching to translator view
-  const openTranslator = useCallback(() => {
-    setCurrentView('translator');
-    closeSidebar();
-  }, [closeSidebar]);
-
-  // Handle returning to chat view
-  const closeTranslator = useCallback(() => {
-    setCurrentView('chat');
-  }, []);
-
   // 2026: Global keyboard shortcuts
   useKeyboardShortcuts({
     onNewChat: createConversation,
@@ -134,7 +121,6 @@ export default function App() {
     onToggleSidebar: toggleSidebar,
     onToggleFocusMode: toggleFocusMode,
     onOpenSearch: triggerSearchOpen,
-    onOpenTranslator: openTranslator,
     onToggleSpeakResponses: toggleSpeakResponses,
     disabled: {
       // Disable sidebar toggle in focus mode (use focus mode toggle instead)
@@ -142,11 +128,10 @@ export default function App() {
     },
   });
 
-  // Handle theme toggle for translator
-  const handleThemeToggle = useCallback(() => {
-    const nextTheme = settings.theme === 'dark' ? 'light' : 'dark';
-    updateSettings({ theme: nextTheme });
-  }, [settings.theme, updateSettings]);
+  // Versatility Engine: Mode switch handler
+  const handleModeChange = useCallback((mode: VoxMode) => {
+    updateSettings({ activeMode: mode });
+  }, [updateSettings]);
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQuery(query);
@@ -165,27 +150,6 @@ export default function App() {
       conv.messages.some(msg => msg.content.toLowerCase().includes(query))
     );
   }, [conversations, searchQuery]);
-
-  // Render Voice Translator view
-  if (currentView === 'translator') {
-    return (
-      <ErrorBoundary>
-        <div className="h-screen w-screen bg-white dark:bg-zinc-950">
-          <Suspense fallback={
-            <div className="flex items-center justify-center h-full">
-              <div className="animate-pulse text-zinc-500">Loading translator...</div>
-            </div>
-          }>
-            <VoiceTranslator
-              theme={settings.theme}
-              onThemeToggle={handleThemeToggle}
-              onBack={closeTranslator}
-            />
-          </Suspense>
-        </div>
-      </ErrorBoundary>
-    );
-  }
 
   return (
     <ErrorBoundary>
@@ -216,7 +180,6 @@ export default function App() {
               onPin={togglePin}
               onToggle={toggleSidebar}
               onOpenSettings={() => setIsSettingsOpen(true)}
-              onOpenTranslator={openTranslator}
               isMobile={isMobile}
               isMobileOpen={isMobileSidebarOpen}
               onMobileClose={closeSidebar}
@@ -274,6 +237,9 @@ export default function App() {
             retryTextMessage={retryTextMessage}
             focusMode={settings.focusMode}
             columnRevealMessageId={columnRevealMessageId}
+            liveTranscript={liveTranscript}
+            activeMode={(settings.activeMode || 'assistant') as VoxMode}
+            onModeChange={handleModeChange}
           />
         </main>
 
@@ -288,6 +254,7 @@ export default function App() {
             onImport={handleImport}
           />
         </Suspense>
+
       </div>
     </ErrorBoundary>
   );

@@ -1,9 +1,10 @@
 // 2026 State Integrity: Conversation Management with Hydration Guardrails
 // Implements: Active ID persistence, race condition prevention, strict save-order
 // REFACTORED: Unified Message Pipeline with functional state updates throughout
+// REFACTORED: Extracted mutateConversation helper to eliminate duplication
 
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { Conversation, Message, ConversationAnalytics } from '../types';
+import { Conversation, Message } from '../types';
 import { storageService } from '../services/storage';
 import { computeConversationAnalytics } from './useAnalytics';
 
@@ -26,10 +27,10 @@ export const useConversations = () => {
   const isHydratingRef = useRef(true);
   const pendingOperationsRef = useRef<Array<() => Promise<void>>>([]);
 
-  // 2026 UNIFIED PIPELINE: Conversation state ref for functional access
+  // Conversation state ref for functional access
   const conversationsRef = useRef<Conversation[]>([]);
 
-  // 2026 UNIFIED PIPELINE: Active ID lock to prevent mid-stream corruption
+  // Active ID lock to prevent mid-stream corruption
   const pipelineLockRef = useRef<PipelineLockState>({
     locked: false,
     activeConversationId: null,
@@ -42,21 +43,18 @@ export const useConversations = () => {
   }, [conversations]);
 
   // === CRITICAL: Persist activeConversationId on EVERY change ===
-  // 2026 UNIFIED PIPELINE: Respects active ID lock during message streams
   const setCurrentId = useCallback((id: string | null, force: boolean = false) => {
-    // GUARDRAIL: Prevent conversation switching during active message pipeline
     if (!force && pipelineLockRef.current.locked) {
       console.warn('[useConversations] Blocked conversation switch: pipeline locked for',
         pipelineLockRef.current.activeConversationId);
       return false;
     }
     setCurrentIdState(id);
-    // Immediate sync to storage - no waiting
     storageService.setActiveConversationIdSync(id);
     return true;
   }, []);
 
-  // === 2026 UNIFIED PIPELINE: Lock/Unlock functions for message operations ===
+  // === Lock/Unlock functions for message operations ===
   const acquirePipelineLock = useCallback((conversationId: string, operationId: string): boolean => {
     if (pipelineLockRef.current.locked) {
       console.warn('[useConversations] Pipeline already locked by', pipelineLockRef.current.operationId);
@@ -91,19 +89,62 @@ export const useConversations = () => {
     return pipelineLockRef.current.activeConversationId;
   }, []);
 
+  // ============================================================================
+  // EXTRACTED: mutateConversation — shared guardrail + persist + setState + ref-sync
+  // Eliminates ~120 lines of duplicated boilerplate across rename, pin, clear
+  // ============================================================================
+  const mutateConversation = useCallback(
+    async (
+      convId: string,
+      updater: (conv: Conversation) => Conversation,
+      opts?: { allowWhileLocked?: boolean },
+    ): Promise<void> => {
+      // Hydration guardrail
+      if (isHydratingRef.current) {
+        return new Promise<void>((resolve) => {
+          pendingOperationsRef.current.push(async () => {
+            const conv = conversationsRef.current.find((c) => c.id === convId);
+            if (conv) {
+              const updated = updater(conv);
+              await storageService.saveConversation(updated);
+              setConversations((prev) => prev.map((c) => (c.id === convId ? updated : c)));
+              conversationsRef.current = conversationsRef.current.map((c) => (c.id === convId ? updated : c));
+            }
+            resolve();
+          });
+        });
+      }
+
+      // Pipeline lock guardrail
+      if (!opts?.allowWhileLocked && pipelineLockRef.current.locked && pipelineLockRef.current.activeConversationId === convId) {
+        console.warn('[useConversations] Blocked: conversation is pipeline-locked');
+        return;
+      }
+
+      const conv = conversationsRef.current.find((c) => c.id === convId);
+      if (!conv) return;
+
+      const updated = updater(conv);
+      await storageService.saveConversation(updated);
+
+      setConversations((prev) => {
+        const result = prev.map((c) => (c.id === convId ? updated : c));
+        conversationsRef.current = result;
+        return result;
+      });
+    },
+    [],
+  );
+
   // === HYDRATION: Non-Destructive Loading ===
   const hydrate = useCallback(async () => {
     setHydrationState('HYDRATING');
     isHydratingRef.current = true;
 
     try {
-      // Step 1: Load all conversations from storage
       const storedConversations = await storageService.getConversations();
-
-      // Step 2: Get persisted activeConversationId
       const storedActiveId = storageService.getActiveConversationIdSync();
 
-      // Step 3: Validate the active ID exists in conversations
       let validActiveId: string | null = null;
 
       if (storedActiveId) {
@@ -111,28 +152,22 @@ export const useConversations = () => {
         if (exists) {
           validActiveId = storedActiveId;
         } else {
-          // Active ID points to deleted conversation - clear it
           storageService.setActiveConversationIdSync(null);
         }
       }
 
-      // Step 4: GUARDRAIL - If no valid activeId but conversations exist, use most recent
       if (!validActiveId && storedConversations.length > 0) {
         const sorted = [...storedConversations].sort((a, b) => b.updatedAt - a.updatedAt);
         validActiveId = sorted[0].id;
-        // Persist the recovered ID
         storageService.setActiveConversationIdSync(validActiveId);
       }
 
-      // Step 5: Set state atomically
       setConversations(storedConversations);
       setCurrentIdState(validActiveId);
 
-      // Mark hydration complete
       isHydratingRef.current = false;
       setHydrationState('READY');
 
-      // Execute any pending operations that were queued during hydration
       const pending = pendingOperationsRef.current;
       pendingOperationsRef.current = [];
       for (const op of pending) {
@@ -157,7 +192,6 @@ export const useConversations = () => {
 
   // === ATOMIC: Create conversation and persist BEFORE returning ===
   const createConversation = useCallback(async (title: string = 'New Chat'): Promise<Conversation> => {
-    // GUARDRAIL: Block if hydration not complete
     if (isHydratingRef.current) {
       return new Promise((resolve) => {
         pendingOperationsRef.current.push(async () => {
@@ -167,20 +201,15 @@ export const useConversations = () => {
       });
     }
 
-    // ATOMIC: Create and persist in single operation
     const newConv = await storageService.createAndPersistConversation(title);
-
-    // Update local state AFTER storage confirms
     setConversations(prev => [newConv, ...prev]);
     setCurrentIdState(newConv.id);
 
     return newConv;
   }, []);
 
-  // === 2026 UNIFIED PIPELINE: Add message with FUNCTIONAL state access ===
-  // CRITICAL FIX: Uses conversationsRef to avoid stale closure race conditions
+  // === Add message with FUNCTIONAL state access ===
   const addMessage = useCallback(async (convId: string, message: Message): Promise<void> => {
-    // GUARDRAIL: Block if hydration not complete
     if (isHydratingRef.current) {
       return new Promise((resolve) => {
         pendingOperationsRef.current.push(async () => {
@@ -190,11 +219,9 @@ export const useConversations = () => {
       });
     }
 
-    // 2026 FIX: Read from REF to get latest state (avoids stale closure)
     const currentConversations = conversationsRef.current;
     const convIndex = currentConversations.findIndex(c => c.id === convId);
 
-    // If conversation doesn't exist in memory, reload from storage
     let targetConv: Conversation | null = null;
     if (convIndex === -1) {
       const storedConversations = await storageService.getConversations();
@@ -207,45 +234,39 @@ export const useConversations = () => {
       targetConv = currentConversations[convIndex];
     }
 
-    // Build updated conversation
     const updatedConv: Conversation = {
       ...targetConv,
       messages: [...targetConv.messages, message],
       updatedAt: Date.now(),
     };
 
-    // Auto-rename if title is "New Chat" and it's the first user message
     if (updatedConv.title === 'New Chat' && message.role === 'user') {
-      updatedConv.title = message.content.slice(0, 30) + (message.content.length > 30 ? '...' : '');
+      // Silent Swap: Instant optimistic title from first user message
+      const snippet = message.content.trim().substring(0, 25);
+      updatedConv.title = snippet + (message.content.trim().length > 25 ? '...' : '');
     }
 
-    // STRICT SAVE-ORDER: Persist to storage FIRST - MUST AWAIT
     await storageService.saveConversation(updatedConv);
 
-    // 2026 FIX: Use FUNCTIONAL update to ensure atomic state merge
     setConversations(prev => {
       const index = prev.findIndex(c => c.id === convId);
       if (index === -1) {
-        // Conversation was added from storage - prepend it
         return [updatedConv, ...prev];
       }
-      // Create new array with updated conversation at same position
       const updated = [...prev];
       updated[index] = updatedConv;
       return updated;
     });
 
-    // 2026 FIX: Immediately sync ref for next operation in same pipeline
     conversationsRef.current = conversationsRef.current.map(c =>
       c.id === convId ? updatedConv : c
     );
     if (convIndex === -1) {
       conversationsRef.current = [updatedConv, ...conversationsRef.current];
     }
-  }, []); // 2026: Empty deps - uses refs to avoid stale closures
+  }, []);
 
   // === Delete conversation ===
-  // 2026 FIX: Uses functional pattern to avoid stale closures
   const deleteConversation = useCallback(async (id: string) => {
     if (isHydratingRef.current) {
       pendingOperationsRef.current.push(async () => {
@@ -254,7 +275,6 @@ export const useConversations = () => {
       return;
     }
 
-    // GUARDRAIL: Cannot delete conversation while pipeline is locked to it
     if (pipelineLockRef.current.locked && pipelineLockRef.current.activeConversationId === id) {
       console.warn('[useConversations] Cannot delete: conversation is pipeline-locked');
       return;
@@ -262,138 +282,50 @@ export const useConversations = () => {
 
     await storageService.deleteConversation(id);
 
-    // 2026 FIX: Use functional update and read currentId from storage
     setConversations(prev => {
       const filtered = prev.filter(c => c.id !== id);
-      // Update ref immediately
       conversationsRef.current = filtered;
       return filtered;
     });
 
-    // Check if we need to switch active conversation
     const activeId = storageService.getActiveConversationIdSync();
     if (activeId === id) {
-      // Find next conversation from ref (fresh data)
       const remaining = conversationsRef.current;
       const nextId = remaining.length > 0
         ? [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0].id
         : null;
-      setCurrentId(nextId, true); // Force switch even if locked
+      setCurrentId(nextId, true);
     }
-  }, [setCurrentId]); // 2026: Minimal deps
+  }, [setCurrentId]);
 
-  // === Clear messages ===
-  // 2026 FIX: Uses ref pattern to avoid stale closures
-  const clearMessages = useCallback(async (convId: string) => {
-    if (isHydratingRef.current) {
-      pendingOperationsRef.current.push(async () => {
-        await clearMessages(convId);
-      });
-      return;
-    }
+  // === Rename, Pin, Clear — now one-liners via mutateConversation ===
 
-    // GUARDRAIL: Cannot clear while pipeline is locked
-    if (pipelineLockRef.current.locked && pipelineLockRef.current.activeConversationId === convId) {
-      console.warn('[useConversations] Cannot clear: conversation is pipeline-locked');
-      return;
-    }
+  const renameConversation = useCallback(
+    (id: string, newTitle: string) =>
+      mutateConversation(id, (conv) => ({ ...conv, title: newTitle.trim() || 'Untitled', updatedAt: Date.now() }), { allowWhileLocked: true }),
+    [mutateConversation],
+  );
 
-    // 2026 FIX: Read from ref for fresh data
-    const targetConv = conversationsRef.current.find(c => c.id === convId);
-    if (!targetConv) return;
+  const togglePin = useCallback(
+    (id: string) =>
+      mutateConversation(id, (conv) => ({ ...conv, isPinned: !conv.isPinned })),
+    [mutateConversation],
+  );
 
-    const cleared = { ...targetConv, messages: [], updatedAt: Date.now() };
+  const clearMessages = useCallback(
+    (convId: string) =>
+      mutateConversation(convId, (conv) => ({ ...conv, messages: [], updatedAt: Date.now() })),
+    [mutateConversation],
+  );
 
-    // Persist first - MUST AWAIT
-    await storageService.saveConversation(cleared);
-
-    // Then update state with functional pattern
-    setConversations(prev => {
-      const index = prev.findIndex(c => c.id === convId);
-      if (index === -1) return prev;
-
-      const updated = [...prev];
-      updated[index] = cleared;
-      // Sync ref
-      conversationsRef.current = updated;
-      return updated;
-    });
-  }, []); // 2026: Empty deps - uses refs
-
-  // === Rename conversation ===
-  // 2026 FIX: Uses ref pattern to avoid stale closures
-  const renameConversation = useCallback(async (id: string, newTitle: string) => {
-    if (isHydratingRef.current) {
-      pendingOperationsRef.current.push(async () => {
-        await renameConversation(id, newTitle);
-      });
-      return;
-    }
-
-    // 2026 FIX: Read from ref for fresh data
-    const conv = conversationsRef.current.find(c => c.id === id);
-    if (!conv) return;
-
-    const renamed = { ...conv, title: newTitle.trim() || 'Untitled', updatedAt: Date.now() };
-
-    // Persist first - MUST AWAIT
-    await storageService.saveConversation(renamed);
-
-    // Then update state with functional pattern
-    setConversations(prev => {
-      const index = prev.findIndex(c => c.id === id);
-      if (index === -1) return prev;
-
-      const updated = [...prev];
-      updated[index] = renamed;
-      // Sync ref
-      conversationsRef.current = updated;
-      return updated;
-    });
-  }, []); // 2026: Empty deps - uses refs
-
-  // === Toggle pin ===
-  // 2026 FIX: Uses ref pattern to avoid stale closures
-  const togglePin = useCallback(async (id: string) => {
-    if (isHydratingRef.current) {
-      pendingOperationsRef.current.push(async () => {
-        await togglePin(id);
-      });
-      return;
-    }
-
-    // 2026 FIX: Read from ref for fresh data
-    const conv = conversationsRef.current.find(c => c.id === id);
-    if (!conv) return;
-
-    const toggled = { ...conv, isPinned: !conv.isPinned };
-
-    // Persist first - MUST AWAIT
-    await storageService.saveConversation(toggled);
-
-    // Then update state with functional pattern
-    setConversations(prev => {
-      const index = prev.findIndex(c => c.id === id);
-      if (index === -1) return prev;
-
-      const updated = [...prev];
-      updated[index] = toggled;
-      // Sync ref
-      conversationsRef.current = updated;
-      return updated;
-    });
-  }, []); // 2026: Empty deps - uses refs
-
-  // 2026 UNIFIED PIPELINE: Update message in-place for streaming
-  // 2026 Analytics: Now accepts optional latency parameter
+  // Update message in-place for streaming
   const updateMessageContent = useCallback(async (
     convId: string,
     messageId: string,
     content: string,
     persist: boolean = false,
-    latency?: number // 2026 Analytics: Response time in ms
+    latency?: number
   ): Promise<void> => {
-    // Use functional update to avoid race conditions
     setConversations(prev => {
       const convIndex = prev.findIndex(c => c.id === convId);
       if (convIndex === -1) return prev;
@@ -408,10 +340,8 @@ export const useConversations = () => {
       conv.updatedAt = Date.now();
       updated[convIndex] = conv;
 
-      // Sync ref immediately
       conversationsRef.current = updated;
 
-      // Optionally persist (only final update should persist)
       if (persist) {
         storageService.saveConversation(conv);
       }
@@ -420,12 +350,11 @@ export const useConversations = () => {
     });
   }, []);
 
-  // 2026 Analytics: Update conversation with computed analytics
+  // Update conversation with computed analytics
   const updateConversationWithAnalytics = useCallback(async (
     convId: string,
     newLatency?: number
   ): Promise<void> => {
-    // COMPUTATION GUARD: All analytics calculations happen here, outside render
     setConversations(prev => {
       const convIndex = prev.findIndex(c => c.id === convId);
       if (convIndex === -1) return prev;
@@ -433,22 +362,18 @@ export const useConversations = () => {
       const updated = [...prev];
       const conv = { ...updated[convIndex] };
 
-      // Compute fresh analytics from messages
       conv.analytics = computeConversationAnalytics(conv.messages, newLatency);
       conv.updatedAt = Date.now();
       updated[convIndex] = conv;
 
-      // Sync ref immediately
       conversationsRef.current = updated;
-
-      // Persist analytics update
       storageService.saveConversation(conv);
 
       return updated;
     });
   }, []);
 
-  // 2026 UNIFIED PIPELINE: Get fresh conversation state (avoids stale closure)
+  // Get fresh conversation state (avoids stale closure)
   const getConversationById = useCallback((convId: string): Conversation | null => {
     return conversationsRef.current.find(c => c.id === convId) || null;
   }, []);
@@ -468,14 +393,12 @@ export const useConversations = () => {
     loading,
     isReady,
     hydrationState,
-    // 2026 UNIFIED PIPELINE: New exports for state integrity
     acquirePipelineLock,
     releasePipelineLock,
     isPipelineLocked,
     getLockedConversationId,
     updateMessageContent,
     getConversationById,
-    // 2026 Analytics: Conversation analytics update
     updateConversationWithAnalytics,
   };
 };

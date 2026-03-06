@@ -82,6 +82,7 @@ export interface AppSettings {
   reducedMotion: boolean; // WCAG 2.2: respect prefers-reduced-motion
   uiScale: number; // Global UI scale factor (0.8 - 1.4, default 1.0)
   focusMode: boolean; // 2026: Zen Focus Mode - hides sidebar, centers chat container
+  activeMode: string; // Versatility Engine: active AI persona mode
 }
 
 export interface StorageAdapter {

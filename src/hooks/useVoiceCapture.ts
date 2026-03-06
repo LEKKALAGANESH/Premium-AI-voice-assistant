@@ -30,7 +30,7 @@ const VALID_TRANSITIONS: Record<CaptureState, CaptureState[]> = {
 
 // === CONFIGURATION ===
 const CONFIG = {
-  SILENCE_TIMEOUT_MS: 2500,        // 2.5s silence anchor
+  SILENCE_TIMEOUT_MS: 1500,        // 1.5s silence anchor (was 2.5s — Zero-Wait Engine)
   MIN_TRANSCRIPT_LENGTH: 4,        // Ignore < 4 chars (coughs, "um")
   COUNTDOWN_UPDATE_INTERVAL: 50,   // Update progress every 50ms
   SLOW_SPEAKER_THRESHOLD: 80,      // WPM for slow speaker detection
@@ -61,6 +61,8 @@ interface UseVoiceCaptureProps {
   onFinalSubmit?: (result: CaptureResult) => void;
   onError?: (error: string, voxError?: VoxError) => void;
   onStateChange?: (state: CaptureState) => void;
+  /** Recognition language. Empty string = browser auto-detect (world-wide native). */
+  lang?: string;
 }
 
 interface UseVoiceCaptureReturn extends VoiceCaptureState {
@@ -76,6 +78,7 @@ export const useVoiceCapture = ({
   onFinalSubmit,
   onError,
   onStateChange,
+  lang = '',
 }: UseVoiceCaptureProps = {}): UseVoiceCaptureReturn => {
   // === STATE ===
   const [captureState, setCaptureState] = useState<CaptureState>('IDLE');
@@ -97,12 +100,14 @@ export const useVoiceCapture = ({
   const streamRef = useRef<MediaStream | null>(null);
   const isAbortedRef = useRef<boolean>(false);
   const lastResultIndexRef = useRef<number>(0);
+  const langRef = useRef(lang);
 
-  // Keep state ref in sync
+  // Keep refs in sync
   useEffect(() => {
     stateRef.current = captureState;
     onStateChange?.(captureState);
   }, [captureState, onStateChange]);
+  useEffect(() => { langRef.current = lang; }, [lang]);
 
   // === STATE TRANSITION ===
   const transitionTo = useCallback((nextState: CaptureState) => {
@@ -308,7 +313,10 @@ export const useVoiceCapture = ({
     // === CONTINUOUS STREAM PROTOCOL ===
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = 'en-US';
+    // World-wide native: use dynamic lang or auto-detect (empty = browser default)
+    if (langRef.current) {
+      recognition.lang = langRef.current;
+    }
     recognition.maxAlternatives = 1;
 
     // === RESULT HANDLER (Core Smart-Silence Logic) ===
